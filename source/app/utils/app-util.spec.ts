@@ -1137,6 +1137,34 @@ function createProgressTestOptions(overrides: {
 }
 
 test.serial(
+	'review command - echoes the submitted invocation before its result',
+	async t => {
+		const queued: React.ReactNode[] = [];
+		const options = createProgressTestOptions({
+			onAddToChatQueue: component => queued.push(component),
+		});
+		const originalExecute = commandRegistry.execute;
+		commandRegistry.execute = async () => 'Review result';
+
+		try {
+			await handleMessageSubmission('/review quick 1467', options);
+
+			t.is(queued.length, 2);
+			t.is(
+				(queued[0] as React.ReactElement<{message: string}>).props.message,
+				'$ /review quick 1467',
+			);
+			t.is(
+				(queued[1] as React.ReactElement<{message: string}>).props.message,
+				'Review result',
+			);
+		} finally {
+			commandRegistry.execute = originalExecute;
+		}
+	},
+);
+
+test.serial(
 	'progress spinner - /commit mounts CommandProgress then clears it',
 	async t => {
 		const live: React.ReactNode[] = [];

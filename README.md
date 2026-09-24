@@ -56,7 +56,10 @@ nanocoder review main
 nanocoder review 42
 ```
 
-> **Note:** `nanocoder review` is diff-only v1 and requires an interactive terminal (TTY). It cannot be used with pipes or redirection and its output cannot currently be captured to a file — see [#1287](https://github.com/Nano-Collective/nanocoder/issues/1287).
+`/review` uses read-only agents to investigate and independently verify cited
+findings. Use `/review quick` inside Nanocoder for the original one-shot review.
+The `nanocoder review` launcher still requires an interactive terminal (TTY), so
+its output cannot yet be redirected to a file.
 
 ### Screen Modes
 

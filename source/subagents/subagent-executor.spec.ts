@@ -137,6 +137,148 @@ test.serial('executes a simple task without tool calls', async t => {
 	t.true(result.executionTimeMs >= 0);
 });
 
+test.serial('rejects invalid per-run execution limits', async t => {
+	const executor = new SubagentExecutor(
+		createMockToolManager(),
+		createMockClient([{content: 'not called'}]),
+	);
+	const result = await executor.execute(
+		{subagent_type: 'explore', description: 'Invalid limits'},
+		undefined,
+		0,
+		undefined,
+		undefined,
+		{maxTurns: 0},
+	);
+
+	t.false(result.success);
+	t.regex(result.error ?? '', /maxTurns must be a positive integer/);
+});
+
+test.serial('per-run allowedTools can only narrow agent tools', async t => {
+	let diffCalls = 0;
+	const executor = new SubagentExecutor(
+		createMockToolManager({
+			read_file: {handler: async () => 'contents', readOnly: true},
+			git_diff: {
+				handler: async () => {
+					diffCalls++;
+					return 'diff';
+				},
+				readOnly: true,
+			},
+		}),
+		createMockClient([
+			{
+				content: '',
+				tool_calls: [
+					{
+						id: 'diff',
+						function: {name: 'git_diff', arguments: '{}'},
+					},
+				],
+			},
+			{content: 'Done'},
+		]),
+	);
+
+	const result = await executor.execute(
+		{subagent_type: 'explore', description: 'Try to inspect a diff'},
+		undefined,
+		0,
+		undefined,
+		undefined,
+		{allowedTools: ['read_file']},
+	);
+
+	t.true(result.success);
+	t.is(diffCalls, 0);
+});
+
+test.serial('tool-call budget stops before a call past the limit', async t => {
+	let toolCalls = 0;
+	const executor = new SubagentExecutor(
+		createMockToolManager({
+			read_file: {
+				handler: async () => {
+					toolCalls++;
+					return 'contents';
+				},
+				readOnly: true,
+			},
+		}),
+		createMockClient([
+			{
+				content: 'Partial analysis',
+				tool_calls: [
+					{
+						id: 'first',
+						function: {name: 'read_file', arguments: '{}'},
+					},
+					{
+						id: 'second',
+						function: {name: 'read_file', arguments: '{}'},
+					},
+				],
+			},
+		]),
+	);
+
+	const result = await executor.execute(
+		{subagent_type: 'explore', description: 'Read twice'},
+		undefined,
+		0,
+		undefined,
+		undefined,
+		{maxToolCalls: 1},
+	);
+
+	t.false(result.success);
+	t.is(toolCalls, 1);
+	t.is(result.output, 'Partial analysis');
+	t.regex(result.error ?? '', /tool-call budget/);
+});
+
+test.serial('turn budget returns partial output without another model call', async t => {
+	let modelCalls = 0;
+	const executor = new SubagentExecutor(
+		createMockToolManager({
+			read_file: {handler: async () => 'contents', readOnly: true},
+		}),
+		createMockClient(
+			[
+				{
+					content: 'Partial analysis',
+					tool_calls: [
+						{
+							id: 'first',
+							function: {name: 'read_file', arguments: '{}'},
+						},
+					],
+				},
+				{content: 'must not be requested'},
+			],
+			() => {
+				modelCalls++;
+			},
+		),
+	);
+
+	const result = await executor.execute(
+		{subagent_type: 'explore', description: 'One turn only'},
+		undefined,
+		0,
+		undefined,
+		undefined,
+		{maxTurns: 1},
+	);
+
+	t.false(result.success);
+	t.is(modelCalls, 1);
+	t.is(result.output, 'Partial analysis');
+	t.regex(result.error ?? '', /turn budget/);
+});
+
 test.serial('reports provider usage for every subagent model call', async t => {
 	const toolManager = createMockToolManager({
 		read_file: {handler: async () => 'file contents', readOnly: true},

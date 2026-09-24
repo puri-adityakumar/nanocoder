@@ -76,6 +76,48 @@ export interface SubagentExecutorOptions {
 	onApiCallComplete?: SubagentApiCallHandler;
 }
 
+/**
+ * Optional caller-side limits for one subagent run. These limits can only
+ * narrow the loaded subagent's permissions; they can never add tools that the
+ * subagent configuration or global configuration already removed.
+ */
+export interface SubagentExecutionLimits {
+	/** Tool ceiling for this run, intersected with the subagent's own tools. */
+	allowedTools?: readonly string[];
+	/** Attempted tool calls allowed before execution stops. */
+	maxToolCalls?: number;
+	/** Model turns allowed before execution stops. */
+	maxTurns?: number;
+}
+
+function validateExecutionLimits(
+	limits: SubagentExecutionLimits | undefined,
+): string | undefined {
+	if (!limits) return undefined;
+
+	if (
+		limits.allowedTools !== undefined &&
+		(!Array.isArray(limits.allowedTools) ||
+			limits.allowedTools.some(toolName => typeof toolName !== 'string'))
+	) {
+		return 'allowedTools must be an array of tool names';
+	}
+	if (
+		limits.maxToolCalls !== undefined &&
+		(!Number.isInteger(limits.maxToolCalls) || limits.maxToolCalls < 0)
+	) {
+		return 'maxToolCalls must be a non-negative integer';
+	}
+	if (
+		limits.maxTurns !== undefined &&
+		(!Number.isInteger(limits.maxTurns) || limits.maxTurns <= 0)
+	) {
+		return 'maxTurns must be a positive integer';
+	}
+
+	return undefined;
+}
+
 function hasReportedUsage(usage: ApiUsage | undefined): usage is ApiUsage {
 	return (
 		usage !== undefined &&
@@ -195,8 +237,20 @@ export class SubagentExecutor {
 		depth = 0,
 		agentId?: string,
 		executionContext?: Omit<ToolExecutionContext, 'abortSignal'>,
+		limits?: SubagentExecutionLimits,
 	): Promise<SubagentResult> {
 		const startTime = Date.now();
+
+		const limitsError = validateExecutionLimits(limits);
+		if (limitsError) {
+			return {
+				subagentName: task.subagent_type,
+				output: '',
+				success: false,
+				error: `Invalid subagent execution limits: ${limitsError}`,
+				executionTimeMs: Date.now() - startTime,
+			};
+		}
 
 		if (depth >= MAX_SUBAGENT_DEPTH) {
 			return {
@@ -222,8 +276,8 @@ export class SubagentExecutor {
 				};
 			}
 
-			const context = this.createSubagentContext(config, task);
-			const filteredTools = this.filterTools(config);
+			const context = this.createSubagentContext(config, task, limits);
+			const filteredTools = this.filterTools(config, limits);
 			const recalled = await appendRelevantProjectContextWithCount(
 				context.systemMessage,
 				this.buildTaskPrompt(task),
@@ -273,6 +327,7 @@ export class SubagentExecutor {
 					agentId,
 					executionContext,
 					recordUsage,
+					limits,
 				);
 
 				// Read the final estimated progress count. Provider-reported usage is
@@ -313,6 +368,7 @@ export class SubagentExecutor {
 	private createSubagentContext(
 		config: SubagentConfigWithSource,
 		task: SubagentTask,
+		limits?: SubagentExecutionLimits,
 	): SubagentContext {
 		const initialMessages = [
 			{
@@ -321,7 +377,7 @@ export class SubagentExecutor {
 			},
 		];
 
-		const availableTools = this.getAvailableToolNames(config);
+		const availableTools = this.getAvailableToolNames(config, limits);
 
 		return {
 			availableTools,
@@ -344,7 +400,10 @@ export class SubagentExecutor {
 		return prompt;
 	}
 
-	private getAvailableToolNames(config: SubagentConfigWithSource): string[] {
+	private getAvailableToolNames(
+		config: SubagentConfigWithSource,
+		limits?: SubagentExecutionLimits,
+	): string[] {
 		const allTools = Object.keys(
 			this.toolManager.getAllTools({forSkill: config.ownerSkill}),
 		);
@@ -378,6 +437,11 @@ export class SubagentExecutor {
 		const artifactTools = new Set<string>(SESSION_ARTIFACT_TOOLS);
 		available = available.filter(name => !artifactTools.has(name));
 
+		if (limits?.allowedTools) {
+			const ceiling = new Set(limits.allowedTools);
+			available = available.filter(name => ceiling.has(name));
+		}
+
 		return available;
 	}
 
@@ -388,11 +452,12 @@ export class SubagentExecutor {
 	 */
 	private filterTools(
 		config: SubagentConfigWithSource,
+		limits?: SubagentExecutionLimits,
 	): Record<string, AISDKCoreTool> {
 		const allTools = this.toolManager.getAllTools({
 			forSkill: config.ownerSkill,
 		});
-		const availableNames = this.getAvailableToolNames(config);
+		const availableNames = this.getAvailableToolNames(config, limits);
 
 		const filtered: Record<string, AISDKCoreTool> = {} as Record<
 			string,
@@ -500,6 +565,7 @@ export class SubagentExecutor {
 		agentId?: string,
 		executionContext?: Omit<ToolExecutionContext, 'abortSignal'>,
 		onApiCallComplete?: SubagentApiCallHandler,
+		limits?: SubagentExecutionLimits,
 	): Promise<string> {
 		let iterations = 0;
 		let totalToolCalls = 0;
@@ -565,6 +631,14 @@ export class SubagentExecutor {
 			if (signal?.aborted) {
 				emitProgress('error');
 				throw new Error('Aborted');
+			}
+
+			if (limits?.maxTurns !== undefined && iterations >= limits.maxTurns) {
+				emitProgress('error');
+				throw new SubagentLoopStopError(
+					`Subagent reached its turn budget (maxTurns = ${limits.maxTurns}) — stopping with the work completed so far.`,
+					assistantTranscript.join('\n\n'),
+				);
 			}
 
 			iterations++;
@@ -692,7 +766,11 @@ export class SubagentExecutor {
 				content: responseContent,
 				tool_calls: toolCalls,
 			});
-			if (systemMessage) {
+			if (
+				systemMessage &&
+				limits?.maxTurns === undefined &&
+				limits?.maxToolCalls === undefined
+			) {
 				// Gate on the same view the model receives, so the threshold is not
 				// measured against rows the cap already dropped from the request.
 				const gateInput = capMessagesForModel(messages.slice(1), maxMessages);
@@ -730,6 +808,17 @@ export class SubagentExecutor {
 					throw new Error('Aborted');
 				}
 
+				if (
+					limits?.maxToolCalls !== undefined &&
+					totalToolCalls >= limits.maxToolCalls
+				) {
+					emitProgress('error');
+					throw new SubagentLoopStopError(
+						`Subagent reached its tool-call budget (maxToolCalls = ${limits.maxToolCalls}) — stopping with the work completed so far.`,
+						assistantTranscript.join('\n\n'),
+					);
+				}
+
 				const toolName = toolCall.function.name;
 				totalToolCalls++;
 				appendSubagentTool(agentId, toolName);
@@ -743,6 +832,7 @@ export class SubagentExecutor {
 					config,
 					signal,
 					executionContext,
+					limits,
 				);
 
 				// Count tokens from tool results
@@ -791,6 +881,7 @@ export class SubagentExecutor {
 		config: SubagentConfigWithSource,
 		signal?: AbortSignal,
 		executionContext?: Omit<ToolExecutionContext, 'abortSignal'>,
+		limits?: SubagentExecutionLimits,
 	): Promise<string> {
 		if (signal?.aborted) {
 			return 'Error: Execution was cancelled';
@@ -803,7 +894,7 @@ export class SubagentExecutor {
 		// otherwise run it. That let a read-only agent like `explore` write
 		// files, and let any subagent overwrite the parent session's plan, task
 		// list, or walkthrough (subagents run with the parent's session id).
-		if (!this.getAvailableToolNames(config).includes(toolName)) {
+		if (!this.getAvailableToolNames(config, limits).includes(toolName)) {
 			return (
 				`Error: Tool '${toolName}' is not available to this subagent. ` +
 				'Use only the tools listed in your instructions.'

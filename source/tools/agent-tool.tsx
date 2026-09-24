@@ -32,6 +32,15 @@ export function setAgentToolExecutor(executor: SubagentExecutor): void {
 }
 
 /**
+ * Return the executor initialized with the active app client and tool manager.
+ * Commands use this instead of creating a second, differently configured
+ * subagent runtime.
+ */
+export function getAgentToolExecutor(): SubagentExecutor | null {
+	return executorInstance;
+}
+
+/**
  * Cached list of available agent names for the tool description.
  */
 let availableAgentNames = 'explore (codebase exploration and research)';

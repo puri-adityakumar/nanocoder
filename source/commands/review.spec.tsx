@@ -109,7 +109,7 @@ test('reviewCommand has correct name and description', t => {
 	t.is(command.name, 'review');
 	t.regex(
 		command.description,
-		/Review a branch or PR diff for bugs, security issues, and style violations/,
+		/Grounded, evidence-checked review/,
 	);
 });
 

@@ -83,7 +83,7 @@ export const lazyCommands: LazyCommand[] = [
 	{
 		name: 'review',
 		description:
-			'Review a branch or PR diff for bugs, security issues, and style violations',
+			'Grounded, evidence-checked review of a branch, PR, commits, or working tree (`quick` for one-shot, `activity` for details)',
 		progressLabel: 'Reviewing code',
 		echoInvocation: true,
 		load: () => import('@/commands/review').then(m => m.reviewCommand),

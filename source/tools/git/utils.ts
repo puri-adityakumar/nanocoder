@@ -267,7 +267,7 @@ const GIT_TIMEOUT_MS = 60_000;
 const GIT_ENV = {...process.env, GIT_TERMINAL_PROMPT: '0'};
 
 /**
- * Spawn a command, collect stdout, and resolve with the trimmed output.
+ * Spawn a command, collect stdout bytes, and resolve without decoding chunks.
  * Rejects with stderr (or an exit-code message) on non-zero exit. `label` is
  * the human-readable command name used in error messages (e.g. 'Git', 'gh').
  *
@@ -275,18 +275,20 @@ const GIT_ENV = {...process.env, GIT_TERMINAL_PROMPT: '0'};
  * call is bounded by a timeout as a backstop for prompts that bypass stdin
  * (ssh passphrases and gpg pinentry read the tty directly).
  */
-function execProcess(
+function execProcessRaw(
 	command: string,
 	args: string[],
 	label: string,
-): Promise<string> {
+	signal?: AbortSignal,
+): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const proc = spawn(command, args, {
 			stdio: ['ignore', 'pipe', 'pipe'],
 			env: GIT_ENV,
+			signal,
 		});
-		let stdout = '';
-		let stderr = '';
+		const stdout: Buffer[] = [];
+		const stderr: Buffer[] = [];
 		let settled = false;
 
 		// Settle here rather than on `close`: a helper the child spawned (ssh,
@@ -312,46 +314,73 @@ function execProcess(
 			finish();
 		};
 
-		proc.stdout.on('data', (data: Buffer) => {
-			stdout += data.toString();
-		});
+		proc.stdout.on('data', (data: Buffer) => stdout.push(data));
 
-		proc.stderr.on('data', (data: Buffer) => {
-			stderr += data.toString();
-		});
+		proc.stderr.on('data', (data: Buffer) => stderr.push(data));
 
 		proc.on('close', (code: number | null) => {
 			settle(() => {
 				if (code === 0) {
-					resolve(stdout.trimEnd());
+					resolve(Buffer.concat(stdout));
 				} else {
+					const stderrText = Buffer.concat(stderr).toString();
 					const errorMessage =
-						stderr.trim() || `${label} command failed with exit code ${code}`;
+						stderrText.trim() ||
+						`${label} command failed with exit code ${code}`;
 					reject(new Error(errorMessage));
 				}
 			});
 		});
 
 		proc.on('error', error => {
-			settle(() =>
-				reject(new Error(`Failed to execute ${command}: ${error.message}`)),
-			);
+			settle(() => {
+				if (signal?.aborted) {
+					reject(new Error(`${label} command cancelled`));
+					return;
+				}
+				reject(new Error(`Failed to execute ${command}: ${error.message}`));
+			});
 		});
 	});
+}
+
+function execProcess(
+	command: string,
+	args: string[],
+	label: string,
+	signal?: AbortSignal,
+): Promise<string> {
+	return execProcessRaw(command, args, label, signal).then(output =>
+		output.toString().trimEnd(),
+	);
 }
 
 /**
  * Execute a git command and return the output
  */
-export async function execGit(args: string[]): Promise<string> {
-	return execProcess('git', args, 'Git');
+export async function execGit(
+	args: string[],
+	signal?: AbortSignal,
+): Promise<string> {
+	return execProcess('git', args, 'Git', signal);
+}
+
+/** Execute git and preserve stdout bytes exactly for target file snapshots. */
+export async function execGitBuffer(
+	args: string[],
+	signal?: AbortSignal,
+): Promise<Buffer> {
+	return execProcessRaw('git', args, 'Git', signal);
 }
 
 /**
  * Execute a gh CLI command and return the output
  */
-export async function execGh(args: string[]): Promise<string> {
-	return execProcess('gh', args, 'gh');
+export async function execGh(
+	args: string[],
+	signal?: AbortSignal,
+): Promise<string> {
+	return execProcess('gh', args, 'gh', signal);
 }
 
 // ============================================================================

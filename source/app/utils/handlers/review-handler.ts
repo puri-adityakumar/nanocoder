@@ -6,6 +6,7 @@ import {ReviewActivityStore} from '@/review/review-activity';
 import {renderGroundedReviewReport} from '@/review/review-report';
 import {createReviewMessage} from '@/review/review-session';
 import {resolveReviewToolMode} from '@/review/review-tool-mode';
+import type {ReviewFoundationTools} from '@/review/review-tools';
 import {runGroundedReview} from '@/review/run-grounded-review';
 import {generateKey} from '@/session/key-generator';
 import type {MessageSubmissionOptions} from '@/types/index';
@@ -25,6 +26,7 @@ const COMMAND_MODULE_FORMS = new Set(['quick', 'activity']);
 export async function handleGroundedReviewCommand(
 	message: string,
 	options: MessageSubmissionOptions,
+	dependencies: {tools?: ReviewFoundationTools} = {},
 ): Promise<boolean> {
 	const trimmed = message.trim();
 	const match = trimmed.match(/^\/review(?:\s+([\s\S]*))?$/);
@@ -75,6 +77,7 @@ export async function handleGroundedReviewCommand(
 			),
 			activity,
 			signal: controller.signal,
+			...(dependencies.tools ? {tools: dependencies.tools} : {}),
 		});
 		const report = renderGroundedReviewReport(result, tier);
 		if (result.status === 'failed') {

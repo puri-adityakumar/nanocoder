@@ -203,7 +203,7 @@ nanocoder review 42
 
 This runs a grounded review of the target against the default branch: an agent inspects the pinned revision with read-only tools, and only issues that cite changed code and pass an independent verifier are reported. You can also use `/review <target>` inside the interactive TUI, or `/review quick <target>` for the one-shot diff review. See [code review](../features/review.md).
 
-**Note:** `nanocoder review` requires an interactive terminal (TTY). It cannot be used with pipes or redirection (e.g. `nanocoder review main > review.md` will error) and its output cannot currently be captured to a file (also tracked in [#1287](https://github.com/Nano-Collective/nanocoder/issues/1287)).
+**Note:** On a terminal, `nanocoder review` opens the interactive session. Piped, redirected, or CI runs print the report on stdout and progress on stderr (`nanocoder review main > review.md`). Add `--output-format json` for the structured result. See [code review](../features/review.md).
 
 **Non-interactive mode behavior:**
 

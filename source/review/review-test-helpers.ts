@@ -17,23 +17,40 @@ export interface ReviewGitFixture {
 	cleanup: () => void;
 }
 
+// Host Git config (URL rewrites, fsmonitor daemons, commit signing) changes
+// remote URLs and can keep child pipes open, so fixtures ignore it.
+const FIXTURE_GIT_ENV = {
+	...process.env,
+	GIT_CONFIG_GLOBAL: '/dev/null',
+	GIT_CONFIG_NOSYSTEM: '1',
+	GIT_TERMINAL_PROMPT: '0',
+};
+
 export function createReviewGitFixture(): ReviewGitFixture {
 	const directory = mkdtempSync(join(tmpdir(), 'nanocoder-review-foundation-'));
 	const root = join(directory, 'worktree');
 	const remote = join(directory, 'origin.git');
 	execFileSync('git', ['init', '--initial-branch=main', root], {
 		stdio: 'ignore',
+		env: FIXTURE_GIT_ENV,
 	});
 	execFileSync('git', ['init', '--bare', '--initial-branch=main', remote], {
 		stdio: 'ignore',
+		env: FIXTURE_GIT_ENV,
 	});
 
 	const runGit = (args: string[]) =>
-		execFileSync('git', ['-C', root, ...args], {encoding: 'utf8'}).trimEnd();
+		execFileSync('git', ['-C', root, ...args], {
+			encoding: 'utf8',
+			env: FIXTURE_GIT_ENV,
+		}).trimEnd();
 	const runGitBuffer = (args: string[]) =>
-		execFileSync('git', ['-C', root, ...args]);
+		execFileSync('git', ['-C', root, ...args], {env: FIXTURE_GIT_ENV});
 	const runRemoteGit = (args: string[]) =>
-		execFileSync('git', ['--git-dir', remote, ...args], {encoding: 'utf8'});
+		execFileSync('git', ['--git-dir', remote, ...args], {
+			encoding: 'utf8',
+			env: FIXTURE_GIT_ENV,
+		});
 	const write = (path: string, content: string) => {
 		const filePath = join(root, path);
 		mkdirSync(dirname(filePath), {recursive: true});

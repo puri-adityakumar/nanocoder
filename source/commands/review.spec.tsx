@@ -1,6 +1,8 @@
 import test from 'ava';
 import React from 'react';
 import stripAnsi from 'strip-ansi';
+import {ReviewActivityStore} from '@/review/review-activity';
+import {createReviewMessage} from '@/review/review-session';
 import {renderWithTheme} from '@/test-utils/render-with-theme';
 import type {Message} from '@/types/core';
 import {createReviewCommand, type ReviewDependencies} from './review';
@@ -109,7 +111,7 @@ test('reviewCommand has correct name and description', t => {
 	t.is(command.name, 'review');
 	t.regex(
 		command.description,
-		/Review a branch or PR diff for bugs, security issues, and style violations/,
+		/Grounded, evidence-checked review/,
 	);
 });
 
@@ -744,4 +746,56 @@ test('review uses fallback prompt when loadPrompt returns fallback', async t => 
 
 	t.truthy(React.isValidElement(result));
 	t.is(systemPrompt, fallbackPrompt);
+});
+
+test('review activity needs no client or Git and reports when no review exists', async t => {
+	const command = createReviewCommand({
+		execGit: async () => {
+			throw new Error('git must not run for /review activity');
+		},
+		getCurrentBranch: async () => 'feature',
+		getDefaultBranch: async () => 'main',
+	});
+
+	const empty = await command.handler(['activity'], baseMessages, {
+		...testMetadata,
+		client: undefined,
+	});
+	const {lastFrame} = renderWithTheme(empty as React.ReactElement);
+	t.regex(stripAnsi(lastFrame() ?? ''), /No review activity in this session yet/);
+
+	const extra = await command.handler(['activity', 'now'], baseMessages, testMetadata);
+	const {lastFrame: usageFrame} = renderWithTheme(extra as React.ReactElement);
+	t.regex(stripAnsi(usageFrame() ?? ''), /Usage: \/review activity/);
+});
+
+test('review activity renders the latest saved review expanded', async t => {
+	const store = new ReviewActivityStore();
+	store
+		.begin({source: 'agent', name: 'finder', summary: 'Looking for defects'})
+		.complete('Finished (2 model calls, 1 tool call)');
+	store.finish('completed');
+	const command = createReviewCommand({
+		execGit: async () => '',
+		getCurrentBranch: async () => 'feature',
+		getDefaultBranch: async () => 'main',
+	});
+	const result = await command.handler(
+		['activity'],
+		[
+			...baseMessages,
+			createReviewMessage({
+				report: 'report',
+				tier: 'Grounded',
+				status: 'incomplete',
+				activity: store.toSummary(),
+			}),
+		],
+		testMetadata,
+	);
+	const {lastFrame} = renderWithTheme(result as React.ReactElement);
+	const frame = stripAnsi(lastFrame() ?? '');
+	t.true(frame.includes('Grounded review (incomplete) · completed · 1 agent'));
+	t.true(frame.includes('Looking for defects'));
+	t.true(frame.includes('Finished (2 model calls, 1 tool call)'));
 });

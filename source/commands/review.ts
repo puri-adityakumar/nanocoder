@@ -1,5 +1,9 @@
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import React from 'react';
+import {ReviewActivity} from '@/components/review-activity';
+import {findLatestPersistedReview} from '@/review/review-session';
+import {generateKey} from '@/session/key-generator';
 import {
 	execGh,
 	execGit,
@@ -296,9 +300,13 @@ export function createReviewCommand(
 	return {
 		name: 'review',
 		description:
-			'Review a branch or PR diff for bugs, security issues, and style violations',
+			'Grounded, evidence-checked review of a branch, PR, commits, or working tree (`quick` for one-shot, `activity` for details)',
 		progressLabel: 'Reviewing code',
-		handler: async (args, _messages, metadata) => {
+		handler: async (args, messages, metadata) => {
+			if (args[0]?.toLowerCase() === 'activity') {
+				return renderReviewActivity(args.slice(1), messages);
+			}
+
 			const client = metadata.client;
 			if (!client) {
 				return errorMsg('No active LLM client available.', 'review');
@@ -417,6 +425,28 @@ export function createReviewCommand(
 			}
 		},
 	};
+}
+
+function renderReviewActivity(
+	args: string[],
+	messages: Message[],
+): React.ReactElement {
+	if (args.length > 0) {
+		return errorMsg('Usage: /review activity', 'review');
+	}
+	const review = findLatestPersistedReview(messages);
+	if (!review) {
+		return warningMsg(
+			'No review activity in this session yet. Run /review first.',
+			'review',
+		);
+	}
+	return React.createElement(ReviewActivity, {
+		key: generateKey('review-activity-details'),
+		summary: review.activity,
+		title: `${review.tier} review (${review.status})`,
+		expanded: true,
+	});
 }
 
 function getTruncationNotice(totalLines: number): string {

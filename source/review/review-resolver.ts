@@ -50,6 +50,11 @@ export interface ReviewResolverDependencies {
 	activity?: ReviewActivityStore;
 	signal?: AbortSignal;
 	now?: () => number;
+	/**
+	 * Leave the activity store running after resolution so the caller can
+	 * record the rest of the review in the same trace. The caller must finish it.
+	 */
+	keepActivityOpen?: boolean;
 }
 
 interface LocalBranch {
@@ -1311,6 +1316,11 @@ export async function resolveReviewScope(
 	const tools = dependencies.tools ?? defaultReviewFoundationTools;
 	const activity = dependencies.activity ?? new ActivityStore();
 	const now = dependencies.now ?? Date.now;
+	const finishActivity = (
+		status: Exclude<ReviewActivitySummary['status'], 'running'>,
+	) => {
+		if (!dependencies.keepActivityOpen) activity.finish(status);
+	};
 	let run: ReviewActivitySpan | undefined;
 	try {
 		if (activity.getStatus() !== 'running') {
@@ -1327,7 +1337,7 @@ export async function resolveReviewScope(
 		const parsed = parseReviewRequest(input);
 		if (!parsed.ok) {
 			run.complete('Request needs a more specific scope');
-			activity.finish('completed');
+			finishActivity('completed');
 			return {
 				status: 'clarification',
 				message: parsed.error,
@@ -1346,7 +1356,7 @@ export async function resolveReviewScope(
 			now,
 		);
 		run.complete(formatResolvedReviewScope(snapshot));
-		activity.finish('completed');
+		finishActivity('completed');
 		return {
 			status: 'ready',
 			snapshot,
@@ -1374,7 +1384,7 @@ export async function resolveReviewScope(
 		}
 		if (error instanceof ReviewClarification) {
 			run.complete(error.message);
-			activity.finish('completed');
+			finishActivity('completed');
 			return {
 				status: 'clarification',
 				message: sanitizeReviewActivityText(error.message, 400),
@@ -1390,7 +1400,7 @@ export async function resolveReviewScope(
 		);
 		if (/temporary refs could not be removed/i.test(message)) {
 			run.fail(error, 'Review stopped but temporary ref cleanup failed');
-			activity.finish('failed');
+			finishActivity('failed');
 			return {
 				status: 'failed',
 				message,
@@ -1399,7 +1409,7 @@ export async function resolveReviewScope(
 		}
 		if (dependencies.signal?.aborted || error instanceof ReviewCancelledError) {
 			run.cancel('Cancelled before review scope resolution completed');
-			activity.finish('cancelled');
+			finishActivity('cancelled');
 			return {
 				status: 'cancelled',
 				message:
@@ -1408,7 +1418,7 @@ export async function resolveReviewScope(
 			};
 		}
 		run.fail(error, 'Could not verify the requested review scope');
-		activity.finish('failed');
+		finishActivity('failed');
 		return {
 			status: 'failed',
 			message,

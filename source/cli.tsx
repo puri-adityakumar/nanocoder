@@ -204,7 +204,7 @@ Commands:
                                   Use --preset <react|nextjs|rust> for bundled defaults.
   copilot login [provider-name]   Log in to GitHub Copilot (device flow). Saves credentials for the "GitHub Copilot" provider.
   codex login [provider-name]     Log in to ChatGPT/Codex (device flow). Saves credentials for the "ChatGPT" provider.
-  review <branch|pr-number>       Review a branch or PR diff for bugs, security issues, and style violations.
+  review <branch|pr-number>       Grounded review of a branch or PR: cited findings, independently verified.
   daemon <subcommand>             Manage the per-project skill daemon.
                                   Subcommands: start, stop, status, logs, install, uninstall.
                                   start refuses to run in an untrusted directory; pass

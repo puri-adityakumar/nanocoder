@@ -6,7 +6,7 @@ sidebar_order: 23
 
 # Code review
 
-`/review` runs a grounded review: an agent investigates the exact revision under review with read-only tools, every reported issue must cite `file:line` in the changed code, and an independent verifier re-checks each issue before it is shown. `/review quick` keeps the original one-shot, diff-only review.
+`/review` runs a grounded review: an agent investigates the exact revision under review with read-only tools, every reported issue must cite `file:line` in the changed code, and an independent verifier re-checks each issue before it is shown. `/review deep` runs the same checks with three specialist finders. `/review quick` keeps the original one-shot, diff-only review.
 
 ## Choosing what to review
 
@@ -17,6 +17,7 @@ sidebar_order: 23
 | `/review 42`, `/review PR 42`, or a GitHub PR URL | A pull request, pinned to its current head. Bare numbers are resolved across configured GitHub remotes and fork parents |
 | `/review last 3 commits` | Recent commits on the current branch (`last 3 commits on branch <name>` for another branch) |
 | `/review working tree` | Uncommitted changes, including untracked files |
+| `/review deep [target]` | The same review with three specialist finders (bugs, standards and API misuse, intent and spec), then one shared verification pass |
 | `/review quick [<branch or PR>]` | The one-shot diff review |
 | `/review activity` | The detailed activity trace of the latest review in this session |
 
@@ -30,6 +31,16 @@ When a target is ambiguous (for example a local and a remote branch with the sam
 4. **Verify.** Each remaining issue (up to 8, most severe first) goes to a separate verifier agent that re-reads the code and answers `CONFIRM`, `REJECT`, or `INSUFFICIENT` with a confidence. Only confirmations with confidence 80 or higher are reported as findings.
 
 Models without native tool calling use the same text tool-call fallback as normal chat.
+
+## Deep review
+
+`/review deep` uses the same pinned revision, citation check, verifier, activity view, and saved summary. It runs three finders, each with its own tool budget:
+
+- **bugs** — logic errors, edge cases, races, error handling, security
+- **standards and API misuse** — wrong or deprecated APIs, type-safety, leaks, surrounding patterns
+- **intent and spec** — whether the change does what it claims, and whether callers or migrations are left unfinished
+
+Findings that cite the same line and describe the same issue are merged before verification, and the report notes which perspective already covered them. A specialist that fails or runs out of budget makes the review incomplete; the other specialists' findings are still verified. The review fails only when every specialist finder fails.
 
 ## Reading the result
 

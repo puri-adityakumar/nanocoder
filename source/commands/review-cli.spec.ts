@@ -55,6 +55,27 @@ test('parseReviewCliArgs: errors on extra positional args', t => {
 	t.true(result.error!.includes('extra'));
 });
 
+test('parseReviewCliArgs: keeps a tier word and the target', t => {
+	t.deepEqual(parseReviewCliArgs(['review', 'deep', 'feature/auth']), {
+		isReviewCommand: true,
+		prompt: '/review deep feature/auth',
+		error: undefined,
+	});
+	t.deepEqual(parseReviewCliArgs(['review', 'quick', '42']), {
+		isReviewCommand: true,
+		prompt: '/review quick 42',
+		error: undefined,
+	});
+});
+
+test('parseReviewCliArgs: keeps a multi-word commit scope', t => {
+	t.deepEqual(parseReviewCliArgs(['review', 'last', '3', 'commits']), {
+		isReviewCommand: true,
+		prompt: '/review last 3 commits',
+		error: undefined,
+	});
+});
+
 test('parseReviewCliArgs: errors on exactly two positional args', t => {
 	const result = parseReviewCliArgs(['review', 'main', 'other']);
 	t.is(result.isReviewCommand, true);

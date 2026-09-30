@@ -51,7 +51,13 @@ export function parseReviewCliArgs(args: string[]): ReviewCliResult {
 		return {isReviewCommand: true, prompt: '/review', error: undefined};
 	}
 
-	if (positionals.length > 1) {
+	const phrase = positionals.join(' ');
+	const tiered = /^(?:quick|deep)(?:\s|$)/i.test(phrase);
+	const multiWordScope =
+		/^(?:the\s+)?last\s+\d+\s+commits?\b/i.test(phrase) ||
+		/^(?:the\s+)?working tree$/i.test(phrase) ||
+		/^PR\s+\d+$/i.test(phrase);
+	if (positionals.length > 1 && !tiered && !multiWordScope) {
 		const extra = positionals.slice(1).join(', ');
 		return {
 			isReviewCommand: true,
@@ -62,7 +68,7 @@ export function parseReviewCliArgs(args: string[]): ReviewCliResult {
 
 	return {
 		isReviewCommand: true,
-		prompt: `/review ${positionals[0]}`,
+		prompt: `/review ${phrase}`,
 		error: undefined,
 	};
 }

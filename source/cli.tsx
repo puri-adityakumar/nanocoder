@@ -204,7 +204,9 @@ Commands:
                                   Use --preset <react|nextjs|rust> for bundled defaults.
   copilot login [provider-name]   Log in to GitHub Copilot (device flow). Saves credentials for the "GitHub Copilot" provider.
   codex login [provider-name]     Log in to ChatGPT/Codex (device flow). Saves credentials for the "ChatGPT" provider.
-  review <branch|pr-number>       Grounded review of a branch or PR: cited findings, independently verified.
+  review [quick|deep] [target]    Review a branch, PR, commits, or the working tree.
+                                  Non-TTY and --output-format json print the report
+                                  on stdout and progress on stderr.
   daemon <subcommand>             Manage the per-project skill daemon.
                                   Subcommands: start, stop, status, logs, install, uninstall.
                                   start refuses to run in an untrusted directory; pass
@@ -608,13 +610,6 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	if (outputFormat === 'json' && isReviewCommand) {
-		console.error(
-			'Error: --json cannot be used with `nanocoder review`. Review output is displayed in the interactive terminal.',
-		);
-		process.exit(1);
-	}
-
 	const ciDetected =
 		process.env.CI === 'true' ||
 		Boolean(
@@ -640,15 +635,12 @@ async function main(): Promise<void> {
 	const plainForJson = outputFormat === 'json' && isRunCommand;
 	const plainMode = plainRequested || plainAuto || plainForJson;
 
-	// Hard-error when `review` lands in a non-interactive context (piped
-	// stdout, CI). The plain shell has no slash-command dispatch, so
-	// `/review <target>` would be sent verbatim to the model as chat.
-	if (isReviewCommand && !process.stdout.isTTY) {
-		console.error(
-			'Error: `nanocoder review` requires an interactive terminal (TTY).',
-		);
-		process.exit(1);
-	}
+	// Non-TTY, CI, and --output-format json run the review without Ink.
+	// A TTY without JSON still opens the interactive review.
+	const reviewHeadless =
+		isReviewCommand &&
+		Boolean(reviewPrompt) &&
+		(outputFormat === 'json' || !process.stdout.isTTY || ciDetected);
 
 	// --acp: Agent Client Protocol server mode for editor integration
 	const acpMode = args.includes('--acp');
@@ -712,6 +704,23 @@ async function main(): Promise<void> {
 	} else if (acpMode) {
 		const {runAcpServer} = await import('@/acp/acp-server');
 		await runAcpServer({cliProvider, cliModel, appVersion: version});
+	} else if (reviewHeadless && reviewPrompt) {
+		const {initializePlain} = await import('@/plain/initialize');
+		const {runHeadlessReview} = await import('@/review/headless-review');
+		const init = await initializePlain({cliProvider, cliModel});
+		const reviewArgs = reviewPrompt.startsWith('/review')
+			? reviewPrompt.slice('/review'.length).trim().split(/\s+/).filter(Boolean)
+			: [];
+		const outcome = await runHeadlessReview({
+			args: reviewArgs,
+			client: init.client,
+			provider: init.provider,
+			model: init.model,
+			outputFormat,
+		});
+		if (outcome.stdout) process.stdout.write(outcome.stdout);
+		const {getShutdownManager} = await import('@/utils/shutdown');
+		await getShutdownManager().gracefulShutdown(outcome.exitCode);
 	} else if (plainMode && nonInteractivePrompt) {
 		// Headless, Ink-free path. Note: --plain is currently only valid with
 		// `run`, so we must have a non-empty prompt here.

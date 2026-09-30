@@ -217,7 +217,11 @@ export function parseReviewRequest(input: string): ReviewRequestParseResult {
 	};
 }
 
-/** Parse a repository slug from a GitHub remote without accepting other hosts. */
+/**
+ * Parse a repository slug from a GitHub remote without accepting other hosts.
+ * Credentials embedded in HTTPS remotes (CI tokens, `insteadOf` rewrites) are
+ * ignored; only the owner/repository slug is returned.
+ */
 export function parseGitHubRepository(value: string): string | null {
 	const remote = value.trim();
 	const scp = remote.match(
@@ -229,7 +233,7 @@ export function parseGitHubRepository(value: string): string | null {
 		if (
 			!['https:', 'ssh:', 'git:'].includes(url.protocol) ||
 			url.hostname.toLowerCase() !== 'github.com' ||
-			(url.protocol === 'https:' && (url.username || url.password))
+			url.port
 		) {
 			return null;
 		}

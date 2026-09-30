@@ -97,5 +97,13 @@ test('GitHub remote parsing handles fork URLs and rejects other hosts', t => {
 	t.is(parseGitHubRepository('https://github.com/Nano-Collective/nanocoder'), 'Nano-Collective/nanocoder');
 	t.is(parseGitHubRepository('ssh://git@github.com/org/repo.git'), 'org/repo');
 	t.is(parseGitHubRepository('https://github.com.attacker.test/org/repo'), null);
-	t.is(parseGitHubRepository('https://user:password@github.com/org/repo'), null);
+	t.is(parseGitHubRepository('https://github.com:8443/org/repo'), null);
+});
+
+test('GitHub remote parsing returns only the slug for credentialed HTTPS remotes', t => {
+	t.is(parseGitHubRepository('https://user:password@github.com/org/repo'), 'org/repo');
+	t.is(
+		parseGitHubRepository('https://x-access-token:ghs_abc123@github.com/org/repo.git'),
+		'org/repo',
+	);
 });

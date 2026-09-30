@@ -62,7 +62,13 @@ export function ReviewActivity({
 	useEffect(() => {
 		cancelRequested.current = false;
 		setCancelling(false);
-		return store?.subscribe(forceRender);
+		if (!store) return undefined;
+		const unsubscribe = store.subscribe(forceRender);
+		// Activity recorded between the first render and this subscription
+		// would otherwise stay hidden until the next event, which can be a
+		// long model call away.
+		forceRender();
+		return unsubscribe;
 	}, [store]);
 
 	useInput(

@@ -2,7 +2,7 @@ import type {ReviewFinding} from './review-findings';
 import type {ReviewFileSnapshot, ReviewTargetSnapshot} from './review-snapshot';
 
 /** How far (in lines) a citation may sit from a changed line in the head. */
-export const CITATION_CHANGE_WINDOW = 3;
+const CITATION_CHANGE_WINDOW = 3;
 
 export type CitationCheck =
 	| {ok: true; file: ReviewFileSnapshot}

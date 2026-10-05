@@ -500,12 +500,28 @@ export async function createWorkingTreeSnapshot(
 		dependencies.activity,
 		'tool',
 		'git',
-		['ls-files', '--others', '--exclude-standard', '-z'],
+		[
+			'-C',
+			repositoryRoot,
+			'ls-files',
+			'--others',
+			'--exclude-standard',
+			'--full-name',
+			'-z',
+		],
 		'Finding untracked worktree files',
 		dependencies.signal,
 		() =>
 			tools.execGitBuffer(
-				['ls-files', '--others', '--exclude-standard', '-z'],
+				[
+					'-C',
+					repositoryRoot,
+					'ls-files',
+					'--others',
+					'--exclude-standard',
+					'--full-name',
+					'-z',
+				],
 				dependencies.signal,
 			),
 	);

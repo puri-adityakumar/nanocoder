@@ -1,3 +1,4 @@
+import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync, symlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -195,6 +196,43 @@ test('default scope snapshots dirty-only worktree content and reports a digest',
 	t.deepEqual(untracked?.lineMap.changedHeadLines, [1]);
 	t.regex(result.snapshot.headDigest ?? '', /^[0-9a-f]{64}$/);
 	t.is(result.snapshot.baseOid, result.snapshot.headOid);
+});
+
+test('worktree snapshots include repository-relative paths when launched from a subdirectory', async t => {
+	const fixture = createReviewGitFixture();
+	t.teardown(fixture.cleanup);
+	fixture.write('tracked.ts', 'root before\n');
+	fixture.runGit(['add', '--', 'tracked.ts']);
+	fixture.runGit(['commit', '-m', 'track root file']);
+	fixture.write('tracked.ts', 'root after\n');
+	fixture.write('src/file.ts', 'source after\n');
+	fixture.write('fresh.ts', 'root untracked\n');
+	fixture.write('src/fresh.ts', 'source untracked\n');
+	const options = {
+		cwd: join(fixture.root, 'src'),
+		env: {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null',
+			GIT_CONFIG_NOSYSTEM: '1',
+			GIT_TERMINAL_PROMPT: '0',
+		},
+	};
+	const tools = createReviewFixtureTools(fixture);
+	tools.execGit = async args => execFileSync('git', args, {...options, encoding: 'utf8'}).trimEnd();
+	tools.execGitBuffer = async args => execFileSync('git', args, options);
+	const result = await resolveReviewScope('/review working tree', {tools});
+
+	t.is(result.status, 'ready');
+	if (result.status !== 'ready') return;
+	t.deepEqual(
+		result.snapshot.files.map(file => [file.path, file.headContent]).sort(),
+		[
+			['fresh.ts', 'root untracked\n'],
+			['src/file.ts', 'source after\n'],
+			['src/fresh.ts', 'source untracked\n'],
+			['tracked.ts', 'root after\n'],
+		],
+	);
 });
 
 test('resolver returns a failed result when an activity store is reused', async t => {

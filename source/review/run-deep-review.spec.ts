@@ -178,3 +178,44 @@ test('cancelling during a later finder keeps earlier findings unverified', async
 	t.is(result.unverified[0]?.reason, 'not verified: review cancelled');
 	t.is(result.findings.length, 0);
 });
+
+test('a specialist cut off at the output limit makes the deep review incomplete', async t => {
+	const fixture = featureFixture(t);
+	let index = 0;
+	const {result} = await review(fixture, call => {
+		if (call.role !== 'finder') return {content: verdictBlock({})};
+		index++;
+		return index === 1
+			? {content: 'NO FINDINGS', finishReason: 'length'}
+			: {content: 'NO FINDINGS'};
+	});
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /output was cut off at the model output limit/);
+});
+
+test('a partial read of an omitted file leaves the deep review incomplete', async t => {
+	const fixture = featureFixture(t);
+	fixture.write(
+		'src/large.ts',
+		`${Array.from({length: 1600}, (_, index) => `export const v${index} = ${index};`).join('\n')}\n`,
+	);
+	fixture.runGit(['add', '--all']);
+	fixture.runGit(['commit', '-m', 'add large file']);
+	const {result} = await review(fixture, call => {
+		if (call.role !== 'finder') return {content: verdictBlock({})};
+		const inspected = call.messages.some(message => message.role === 'tool');
+		return inspected
+			? {content: 'NO FINDINGS'}
+			: {
+					toolCalls: [
+						{
+							name: 'review_read_file',
+							args: {path: 'src/large.ts', start_line: 1, end_line: 1},
+						},
+					],
+				};
+	});
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /src\/large.ts was only partially inspected/);
+	t.false(result.incompleteReasons.join('\n').includes('never inspected'));
+});

@@ -64,6 +64,8 @@ nanocoder review --output-format json 42 > review.json
 
 `--output-format json` (and `--json`) is the structured result: status, scope, verified findings, dropped and unverified items, and why a review is incomplete. A failed, cancelled, or ambiguous review exits non-zero. `nanocoder review quick` stays the one-shot diff review. On a terminal, without JSON, `nanocoder review` still opens the interactive session.
 
+Headless review applies the same directory trust check as `nanocoder run`. In a directory you have not trusted yet, it exits non-zero (with a `failed` JSON document when JSON was requested) unless you pass `--trust-directory` or set `NANOCODER_TRUST_DIRECTORY=1`. Setup errors, such as a missing provider, are reported the same way. Targets take the same forms as `/review`, for example `nanocoder review branch feature/auth` or `nanocoder review last 2 commits`.
+
 ## Session history
 
 The report and a bounded, sanitized activity summary are saved with the session, so they reappear when the session is resumed and `/review activity` still works. The summary holds step names, statuses, timings, and safe arguments only — never prompts, diffs, or file contents. The review is shown to you but is not sent to the model as part of later conversation turns.

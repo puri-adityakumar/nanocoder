@@ -51,11 +51,11 @@ nanocoder -h
 | `--model` | | Specify AI model (must be available for the provider) |
 | `--plain` | | Use the lightweight, Ink-free runtime for non-interactive runs. Requires `run`; auto-enables in CI and non-TTY environments |
 | `--no-plain` | | Force the Ink runtime even in CI and non-TTY environments |
-| `--json` | | Emit a single structured JSON object to `stdout` on completion instead of streamed text. Requires `run` and always uses the plain runtime, even in a terminal; incompatible with `--no-plain`, `--acp`, `--vscode` and `review` |
+| `--json` | | Emit a single structured JSON object to `stdout` on completion instead of streamed text. Supported by `run` and `review`, even in a terminal: `run` uses the plain runtime and `review` runs headless. Incompatible with `--acp` and `--vscode`; `run --json` is also incompatible with `--no-plain` |
 | `--output-format` | | Set the `stdout` format, `text` or `json`. Synonym for `--json` |
 | `--context-max` | | Set maximum context length in tokens (supports k/K suffix, e.g. `128k`) |
 | `--mode` | | Start in a specific [development mode](../features/development-modes.md) - `normal`, `auto-accept`, `yolo`, `plan`, or `architect`. Defaults to `auto-accept` for `run` mode; interactive sessions use `defaultMode` from `agents.config.json` if set, otherwise `normal`. |
-| `--trust-directory` | | Skip the first-run directory trust prompt for this run only. Valid with `run` and `nanocoder daemon start`; ignored (with a warning) in interactive mode. The trust is ephemeral - `trustedDirectories` in your preferences file is not modified. |
+| `--trust-directory` | | Skip the first-run directory trust prompt for this run only. Valid with `run`, `review`, and `nanocoder daemon start`; ignored (with a warning) in interactive mode. The trust is ephemeral - `trustedDirectories` in your preferences file is not modified. |
 | `--alt-screen` | | Start in fullscreen mode: a fixed-height layout on the alternate screen buffer with in-app scrolling (enabled by default). |
 | `--no-alt-screen` | | Disable fullscreen mode and force inline mode (main screen, chat history in the terminal's native scrollback). |
 | `--mouse` | | In fullscreen mode, the mouse wheel scrolls the chat viewport; select text with Shift+drag (Option+drag in iTerm2). Enabled by default. |
@@ -203,7 +203,7 @@ nanocoder review 42
 
 This runs a grounded review of the target against the default branch: an agent inspects the pinned revision with read-only tools, and only issues that cite changed code and pass an independent verifier are reported. You can also use `/review <target>` inside the interactive TUI, or `/review quick <target>` for the one-shot diff review. See [code review](../features/review.md).
 
-**Note:** On a terminal, `nanocoder review` opens the interactive session. Piped, redirected, or CI runs print the report on stdout and progress on stderr (`nanocoder review main > review.md`). Add `--output-format json` for the structured result. See [code review](../features/review.md).
+**Note:** On a terminal, `nanocoder review` opens the interactive session. Piped, redirected, or CI runs print the report on stdout and progress on stderr (`nanocoder review main > review.md`). Add `--output-format json` for the structured result. Headless review uses the same directory trust check as `nanocoder run`: pass `--trust-directory` or set `NANOCODER_TRUST_DIRECTORY=1` in a directory you have not trusted yet. See [code review](../features/review.md).
 
 **Non-interactive mode behavior:**
 

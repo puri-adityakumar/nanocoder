@@ -83,6 +83,7 @@ interface UseAppHandlersProps {
 
 	// State setters
 	updateMessages: (newMessages: Message[]) => void;
+	appendMessages?: (messages: Message[]) => void;
 	setIsCancelling: (value: boolean) => void;
 	setDevelopmentMode: (
 		updater: DevelopmentMode | ((prev: DevelopmentMode) => DevelopmentMode),
@@ -970,6 +971,7 @@ export function useAppHandlers(props: UseAppHandlersProps): AppHandlers {
 					setIsToolExecuting: props.setIsToolExecuting,
 					onCommandComplete: () => props.setIsConversationComplete(true),
 					setMessages: props.updateMessages,
+					appendMessages: props.appendMessages,
 					messages: props.messages,
 					provider: props.currentProvider,
 					providerConfig: props.currentProviderConfig,
@@ -1006,6 +1008,7 @@ export function useAppHandlers(props: UseAppHandlersProps): AppHandlers {
 			props.setLiveComponent,
 			props.setIsToolExecuting,
 			props.updateMessages,
+			props.appendMessages,
 			props.messages,
 			props.currentProvider,
 			props.currentProviderConfig,

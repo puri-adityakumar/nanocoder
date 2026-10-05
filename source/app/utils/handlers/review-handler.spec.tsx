@@ -3,6 +3,7 @@ import {Box} from 'ink';
 import React, {useState} from 'react';
 import {commandRegistry} from '@/commands';
 import {createReviewCommand} from '@/commands/review';
+import {useAppState} from '@/hooks/useAppState';
 import {readPersistedReview} from '@/review/review-session';
 import {
 	createScriptedReviewClient,
@@ -53,6 +54,13 @@ function ChatHarness({screen}: {screen: Screen}) {
 			{live}
 		</Box>
 	);
+}
+
+function HistoryHarness({history}: {
+	history: {current?: ReturnType<typeof useAppState>};
+}) {
+	history.current = useAppState('normal');
+	return null;
 }
 
 interface SessionState {
@@ -212,6 +220,58 @@ test.serial('Escape cancels a running review and the result says so', async t =>
 	t.deepEqual(state.capture, [true, false]);
 });
 
+test.serial('a second review cannot replace the running review or its Escape handler', async t => {
+	const fixture = featureFixture(t);
+	let releaseFinder: (() => void) | undefined;
+	const {rendered, options, state} = mountReviewSession(
+		call => new Promise((resolve, reject) => {
+			releaseFinder = () => resolve({content: 'NO FINDINGS'});
+			call.signal?.addEventListener('abort', () => {
+				const error = new Error('aborted');
+				error.name = 'AbortError';
+				reject(error);
+			});
+		}),
+	);
+	t.teardown(() => {
+		releaseFinder?.();
+		rendered.unmount();
+	});
+	const installed: React.ReactNode[] = [];
+	const setLive = options.setLiveComponent;
+	options.setLiveComponent = node => {
+		installed.push(node);
+		setLive(node);
+	};
+	const tools = createReviewFixtureTools(fixture);
+	const running = handleGroundedReviewCommand('/review branch feature/tui', options, {tools});
+	await waitFor(() => rendered.lastFrame()?.includes('finder: turn 1') ?? false);
+	const second = createScriptedReviewClient(() => ({content: 'NO FINDINGS'}));
+	await handleGroundedReviewCommand(
+		'/review branch feature/tui',
+		{...options, client: second.client},
+		{tools},
+	);
+	await tick();
+	t.is(second.calls.length, 0);
+	t.is(installed.length, 1);
+	t.true(rendered.lastFrame()?.includes('A review is already running. Press Esc to cancel it first.'));
+	t.deepEqual(state.capture, [true]);
+	t.deepEqual(state.executing, [true]);
+	t.is(state.completed, 1);
+	let settled = false;
+	void running.then(() => { settled = true; });
+	await waitFor(() => {
+		if (!settled) rendered.stdin.write('\u001B');
+		return settled;
+	});
+	t.is(readPersistedReview(state.messages[0]!)?.status, 'cancelled');
+	t.deepEqual(state.capture, [true, false]);
+	t.deepEqual(state.executing, [true, false]);
+	await handleGroundedReviewCommand('/review branch feature/tui', {...options, client: second.client}, {tools});
+	t.is(second.calls.length, 1);
+});
+
 test.serial('/review activity shows the saved trace of the latest review', async t => {
 	const fixture = featureFixture(t);
 	const {rendered, options} = mountReviewSession(() => ({content: 'NO FINDINGS'}));
@@ -228,6 +288,44 @@ test.serial('/review activity shows the saved trace of the latest review', async
 	t.true(frame.includes('Grounded review (completed) · completed'));
 	t.true(frame.includes('review: Resolve review scope'));
 	t.true(frame.includes('agent: finder'));
+});
+
+test.serial('a completed review appends to the latest real message history', async t => {
+	const fixture = featureFixture(t);
+	let releaseFinder: (() => void) | undefined;
+	const gate = new Promise<void>(resolve => { releaseFinder = resolve; });
+	const {rendered, options, calls} = mountReviewSession(async () => {
+		await gate;
+		return {content: 'NO FINDINGS'};
+	});
+	const history: {current?: ReturnType<typeof useAppState>} = {};
+	const historyView = renderWithTheme(<HistoryHarness history={history} />);
+	t.teardown(() => {
+		releaseFinder?.();
+		rendered.unmount();
+		historyView.unmount();
+	});
+	const original: Message = {role: 'user', content: 'Original question'};
+	const intervening: Message = {role: 'user', content: 'VS Code chat during review'};
+	history.current!.updateMessages([original]);
+	const submittedOptions = {
+		...options,
+		messages: [original],
+		setMessages: history.current!.updateMessages,
+		appendMessages: (messages: Message[]) => history.current!.appendMessages(messages),
+	};
+	const running = handleGroundedReviewCommand('/review branch feature/tui', submittedOptions, {
+		tools: createReviewFixtureTools(fixture),
+	});
+	await waitFor(() => calls.length === 1);
+	history.current!.updateMessages([original, intervening]);
+	await waitFor(() => history.current!.messages.length === 2);
+	releaseFinder?.();
+	await running;
+	await waitFor(() => history.current!.messages.some(message => !!readPersistedReview(message)));
+	t.deepEqual(history.current!.messages.slice(0, 2), [original, intervening]);
+	t.is(history.current!.messages.length, 3);
+	t.is(readPersistedReview(history.current!.messages[2]!)?.status, 'completed');
 });
 
 test.serial('dispatch sends /review to the grounded handler and /review quick to the one-shot command', async t => {

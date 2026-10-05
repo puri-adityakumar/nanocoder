@@ -124,3 +124,24 @@ test('severity ranks sort critical first and verifier input restates the claim',
 	t.true(text.includes('ID: F1'));
 	t.true(text.includes('CLAIMED EVIDENCE: no close()'));
 });
+
+test('verdict confidence validates the entire number', t => {
+	for (const confidence of ['1000', '10000', '190']) {
+		t.is(
+			parseVerdict(
+				`ID: F1\nVERDICT: CONFIRM\nCONFIDENCE: ${confidence}\nREASON: x`,
+				'F1',
+			),
+			null,
+		);
+	}
+	for (const confidence of ['0', '100', '85%']) {
+		t.is(
+			parseVerdict(
+				`ID: F1\nVERDICT: CONFIRM\nCONFIDENCE: ${confidence}\nREASON: x`,
+				'F1',
+			)?.confidence,
+			Number.parseInt(confidence, 10),
+		);
+	}
+});

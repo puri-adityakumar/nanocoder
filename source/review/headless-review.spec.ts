@@ -1,7 +1,12 @@
 import test from 'ava';
+import type {PlainInitResult} from '@/plain/initialize';
+import type {LLMClient} from '@/types/core';
 import {
 	buildHeadlessReviewJson,
+	type HeadlessReviewCliDeps,
+	type HeadlessReviewOptions,
 	runHeadlessReview,
+	runHeadlessReviewCli,
 	splitHeadlessReviewArgs,
 } from './headless-review';
 import {
@@ -136,4 +141,123 @@ test('the quick tier prints the one-shot text and does not start a finder', asyn
 	t.is(calls.length, 1);
 	t.deepEqual(calls[0]?.tools, {});
 	t.true(progress.some(line => line.includes('one-shot')));
+});
+
+test('a failed quick review still prints a JSON document', async t => {
+	const {client} = createScriptedReviewClient(() => ({content: 'unused'}));
+	const outcome = await runHeadlessReview({
+		args: ['quick', '42'],
+		client,
+		provider: 'review-test',
+		model: 'review-test-model',
+		outputFormat: 'json',
+		writeProgress: () => {},
+		quickDependencies: {
+			execGit: async () => '',
+			getCurrentBranch: async () => 'feature',
+			getDefaultBranch: async () => 'main',
+			isGhAvailable: () => false,
+		},
+	});
+	t.is(outcome.exitCode, 1);
+	const parsed = JSON.parse(outcome.stdout) as ReturnType<
+		typeof buildHeadlessReviewJson
+	>;
+	t.is(parsed.tier, 'quick');
+	t.is(parsed.status, 'failed');
+	t.regex(parsed.message ?? '', /gh CLI/);
+});
+
+function cliDeps(
+	overrides: Partial<HeadlessReviewCliDeps> = {},
+): Partial<HeadlessReviewCliDeps> {
+	const client = {
+		getProviderConfig: () => ({
+			name: 'review-test',
+			type: 'openai-compatible',
+			models: ['review-test-model'],
+			config: {},
+			tune: {enabled: true, toolMode: 'xml'},
+		}),
+	} as unknown as LLMClient;
+	return {
+		initializePlain: async () =>
+			({
+				client,
+				provider: 'review-test',
+				model: 'review-test-model',
+			}) as unknown as PlainInitResult,
+		runHeadlessReview: async () => ({exitCode: 0, stdout: 'report\n'}),
+		loadPreferences: () => ({trustedDirectories: []}),
+		savePreferences: () => {},
+		getAppConfig: () => ({}),
+		writeError: () => {},
+		...overrides,
+	};
+}
+
+test.serial('the CLI review refuses an untrusted directory before provider setup', async t => {
+	delete process.env.NANOCODER_TRUST_DIRECTORY;
+	let initialized = false;
+	const errors: string[] = [];
+	const outcome = await runHeadlessReviewCli({
+		args: ['deep', 'main'],
+		trustDirectory: false,
+		outputFormat: 'json',
+		deps: cliDeps({
+			initializePlain: async () => {
+				initialized = true;
+				throw new Error('must not initialize');
+			},
+			writeError: line => errors.push(line),
+		}),
+	});
+	t.is(outcome.exitCode, 1);
+	t.false(initialized);
+	const parsed = JSON.parse(outcome.stdout) as ReturnType<
+		typeof buildHeadlessReviewJson
+	>;
+	t.is(parsed.tier, 'deep');
+	t.is(parsed.status, 'failed');
+	t.regex(parsed.message ?? '', /not trusted/);
+	t.regex(errors.join('\n'), /not trusted/);
+});
+
+test.serial('--trust-directory runs the review with the resolved tune settings', async t => {
+	let received: HeadlessReviewOptions | undefined;
+	const outcome = await runHeadlessReviewCli({
+		args: ['main'],
+		cliModel: 'review-test-model',
+		trustDirectory: true,
+		outputFormat: 'text',
+		deps: cliDeps({
+			runHeadlessReview: async options => {
+				received = options;
+				return {exitCode: 0, stdout: 'report\n'};
+			},
+		}),
+	});
+	t.deepEqual(outcome, {exitCode: 0, stdout: 'report\n'});
+	t.deepEqual(received?.args, ['main']);
+	t.is(received?.model, 'review-test-model');
+	t.is(received?.tune?.toolMode, 'xml');
+});
+
+test.serial('a provider setup failure becomes a failed JSON document', async t => {
+	const outcome = await runHeadlessReviewCli({
+		args: ['main'],
+		trustDirectory: true,
+		outputFormat: 'json',
+		deps: cliDeps({
+			initializePlain: async () => {
+				throw new Error('No providers configured');
+			},
+		}),
+	});
+	t.is(outcome.exitCode, 1);
+	const parsed = JSON.parse(outcome.stdout) as ReturnType<
+		typeof buildHeadlessReviewJson
+	>;
+	t.is(parsed.status, 'failed');
+	t.regex(parsed.message ?? '', /No providers configured/);
 });

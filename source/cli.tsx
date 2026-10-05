@@ -573,16 +573,17 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	// --trust-directory is only respected with `run`. Surface a warning
-	// (rather than silently dropping) if the user passes it interactively
-	// or with `review` (review is TTY-only but sets nonInteractiveMode).
+	// --trust-directory is only respected with `run` and `review`. Surface a
+	// warning (rather than silently dropping) if the user passes it to the
+	// interactive session.
 	const trustDirectoryRequested = args.includes('--trust-directory');
-	if (trustDirectoryRequested && !isRunCommand) {
+	const trustDirectoryApplies = isRunCommand || isReviewCommand;
+	if (trustDirectoryRequested && !trustDirectoryApplies) {
 		console.error(
-			'--trust-directory only applies to non-interactive commands (`nanocoder run ...`, `nanocoder daemon start`); ignoring.',
+			'--trust-directory only applies to non-interactive commands (`nanocoder run ...`, `nanocoder review ...`, `nanocoder daemon start`); ignoring.',
 		);
 	}
-	const trustDirectory = trustDirectoryRequested && isRunCommand;
+	const trustDirectory = trustDirectoryRequested && trustDirectoryApplies;
 
 	// --plain: lightweight, Ink-free runtime. Only valid with `run` in v1.
 	// Auto-detect: enable when stdout isn't a TTY or the env looks like CI,
@@ -705,20 +706,21 @@ async function main(): Promise<void> {
 		const {runAcpServer} = await import('@/acp/acp-server');
 		await runAcpServer({cliProvider, cliModel, appVersion: version});
 	} else if (reviewHeadless && reviewPrompt) {
-		const {initializePlain} = await import('@/plain/initialize');
-		const {runHeadlessReview} = await import('@/review/headless-review');
-		const init = await initializePlain({cliProvider, cliModel});
+		const {runHeadlessReviewCli} = await import('@/review/headless-review');
 		const reviewArgs = reviewPrompt.startsWith('/review')
 			? reviewPrompt.slice('/review'.length).trim().split(/\s+/).filter(Boolean)
 			: [];
-		const outcome = await runHeadlessReview({
+		const outcome = await runHeadlessReviewCli({
 			args: reviewArgs,
-			client: init.client,
-			provider: init.provider,
-			model: init.model,
+			cliProvider,
+			cliModel,
+			trustDirectory,
 			outputFormat,
 		});
-		if (outcome.stdout) process.stdout.write(outcome.stdout);
+		// process.exit() can discard buffered output when stdout is piped.
+		await new Promise<void>(resolve =>
+			process.stdout.write(outcome.stdout, 'utf8', () => resolve()),
+		);
 		const {getShutdownManager} = await import('@/utils/shutdown');
 		await getShutdownManager().gracefulShutdown(outcome.exitCode);
 	} else if (plainMode && nonInteractivePrompt) {

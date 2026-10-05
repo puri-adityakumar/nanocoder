@@ -6,10 +6,20 @@
  * thing written to stdout. Progress and errors go to stderr.
  */
 
+import path from 'node:path';
 import {createReviewCommand, type ReviewDependencies} from '@/commands/review';
-import {writeStatus} from '@/plain/writer';
+import {getAppConfig} from '@/config/index';
+import {
+	ensureDirectoryTrust,
+	loadPreferences,
+	savePreferences,
+} from '@/config/preferences';
+import {resolveTune} from '@/config/tune';
+import {initializePlain} from '@/plain/initialize';
+import {writeError, writeStatus} from '@/plain/writer';
 import type {TuneConfig} from '@/types/config';
 import type {LLMClient} from '@/types/core';
+import {formatError} from '@/utils/error-formatter';
 import {ReviewActivityStore} from './review-activity';
 import {renderGroundedReviewReport} from './review-report';
 import {resolveReviewToolMode} from './review-tool-mode';
@@ -89,6 +99,21 @@ export function buildHeadlessReviewJson(
 	};
 }
 
+function failureJson(tier: HeadlessReviewTier, message: string): string {
+	const body: HeadlessReviewJson = {
+		tier,
+		status: 'failed',
+		message,
+		findings: [],
+		dropped: [],
+		unverified: [],
+		incompleteReasons: [],
+		notes: [],
+		stats: {reported: 0, verifierRuns: 0, modelCalls: 0, toolCalls: 0},
+	};
+	return `${JSON.stringify(body, null, 2)}\n`;
+}
+
 function exitCodeFor(status: GroundedReviewStatus): number {
 	return status === 'failed' ||
 		status === 'cancelled' ||
@@ -154,7 +179,10 @@ export async function runHeadlessReview(
 		const {text, failed} = componentMessage(rendered);
 		if (failed) {
 			writeProgress(text);
-			return {exitCode: 1, stdout: ''};
+			return {
+				exitCode: 1,
+				stdout: format === 'json' ? failureJson('quick', text) : '',
+			};
 		}
 		if (format === 'json') {
 			const body: HeadlessReviewJson = {
@@ -203,5 +231,91 @@ export async function runHeadlessReview(
 		return {exitCode: exitCodeFor(result.status), stdout: `${report}\n`};
 	} finally {
 		stopWatching();
+	}
+}
+
+export interface HeadlessReviewCliOptions {
+	/** Words after `review` (`deep`, `quick`, and the target). */
+	args: string[];
+	cliProvider?: string;
+	cliModel?: string;
+	trustDirectory: boolean;
+	outputFormat: 'text' | 'json';
+	signal?: AbortSignal;
+	deps?: Partial<HeadlessReviewCliDeps>;
+}
+
+export interface HeadlessReviewCliDeps {
+	initializePlain: typeof initializePlain;
+	runHeadlessReview: typeof runHeadlessReview;
+	loadPreferences: typeof loadPreferences;
+	savePreferences: typeof savePreferences;
+	getAppConfig: typeof getAppConfig;
+	writeError: (line: string) => void;
+}
+
+const defaultCliDeps: HeadlessReviewCliDeps = {
+	initializePlain,
+	runHeadlessReview,
+	loadPreferences,
+	savePreferences,
+	getAppConfig,
+	writeError,
+};
+
+/**
+ * `nanocoder review` without a TTY: the same trust gate as `nanocoder run`,
+ * then provider setup and the review. Setup failures still produce a JSON
+ * document when JSON was requested.
+ */
+export async function runHeadlessReviewCli(
+	options: HeadlessReviewCliOptions,
+): Promise<{exitCode: number; stdout: string}> {
+	const deps: HeadlessReviewCliDeps = {...defaultCliDeps, ...options.deps};
+	const {tier} = splitHeadlessReviewArgs(options.args);
+	const fail = (message: string) => {
+		deps.writeError(message);
+		return {
+			exitCode: 1,
+			stdout: options.outputFormat === 'json' ? failureJson(tier, message) : '',
+		};
+	};
+
+	const trust = ensureDirectoryTrust(process.cwd(), options.trustDirectory, {
+		loadPreferences: deps.loadPreferences,
+		savePreferences: deps.savePreferences,
+	});
+	if (trust.persisted) {
+		writeStatus(
+			`Marked ${path.resolve(process.cwd())} as trusted (NANOCODER_TRUST_DIRECTORY=1).`,
+		);
+	}
+	if (!trust.trusted) {
+		return fail(
+			`Directory ${path.resolve(process.cwd())} is not trusted. Pass --trust-directory or set NANOCODER_TRUST_DIRECTORY=1 to bypass the disclaimer for this run.`,
+		);
+	}
+
+	try {
+		const init = await deps.initializePlain({
+			...(options.cliProvider ? {cliProvider: options.cliProvider} : {}),
+			...(options.cliModel ? {cliModel: options.cliModel} : {}),
+		});
+		const tune = resolveTune(
+			deps.getAppConfig(),
+			init.client.getProviderConfig(),
+			deps.loadPreferences(),
+		);
+		return await deps.runHeadlessReview({
+			args: options.args,
+			client: init.client,
+			provider: init.provider,
+			model: init.model,
+			tune,
+			outputFormat: options.outputFormat,
+			...(options.signal ? {signal: options.signal} : {}),
+		});
+	} catch (error) {
+		return fail(formatError(error));
 	}
 }

@@ -94,7 +94,10 @@ export function ReviewActivity({
 	const summary = store ? store.toSummary() : staticSummary;
 	const expandedEvents = summary.events.slice(-maxExpandedEvents);
 	const hiddenByLimit = summary.events.length - expandedEvents.length;
-	const events = expanded ? expandedEvents : summary.events.slice(-recentCount);
+	// slice(-0) returns the whole array, so 0 needs its own branch.
+	const recentEvents =
+		recentCount > 0 ? summary.events.slice(-recentCount) : [];
+	const events = expanded ? expandedEvents : recentEvents;
 	const running = summary.status === 'running';
 	const statusColor =
 		summary.status === 'completed'

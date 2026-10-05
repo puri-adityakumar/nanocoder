@@ -168,6 +168,14 @@ export async function runReviewAgent(
 				return {content: rawContent, calls: native, asText: false};
 			}
 			const parsed = parseToolCalls(rawContent);
+			if (!parsed.success) {
+				return {
+					content: rawContent,
+					calls: [],
+					asText: true,
+					malformed: parsed.error,
+				};
+			}
 			if (!toolMode.disabled) {
 				// Native-tool models sometimes regress to writing calls as text.
 				// Only accept that when every call names a review tool, so code
@@ -183,14 +191,6 @@ export async function runReviewAgent(
 							asText: true,
 						}
 					: {content: rawContent, calls: [], asText: false};
-			}
-			if (!parsed.success) {
-				return {
-					content: rawContent,
-					calls: [],
-					asText: true,
-					malformed: parsed.error,
-				};
 			}
 			return {
 				content: parsed.cleanedContent.trim(),

@@ -21,7 +21,7 @@ function similar(left: string, right: string): boolean {
 	const a = normalise(left);
 	const b = normalise(right);
 	if (!a || !b) return false;
-	return a.includes(b) || b.includes(a);
+	return a === b;
 }
 
 /**

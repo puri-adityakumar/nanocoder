@@ -74,7 +74,7 @@ test('deep review runs one finder per lens and verifies a deduped finding once',
 				content: findingBlock({
 					file: 'src/file.ts',
 					line: 3,
-					issue: 'division by zero',
+					issue: '  DIVISION BY ZERO, when count is 0!  ',
 				}),
 			};
 		}
@@ -218,4 +218,38 @@ test('a partial read of an omitted file leaves the deep review incomplete', asyn
 	t.is(result.status, 'incomplete');
 	t.regex(result.incompleteReasons.join('\n'), /src\/large.ts was only partially inspected/);
 	t.false(result.incompleteReasons.join('\n').includes('never inspected'));
+});
+
+test('deep review verifies distinct identifiers at the same location separately', async t => {
+	const fixture = featureFixture(t);
+	fixture.write('src/file.ts', [
+		'export const value = 1;',
+		'export function accept(id: string, idempotencyKey: string) {',
+		'\treturn {id, idempotencyKey};',
+		'}',
+		'',
+	].join('\n'));
+	fixture.runGit(['add', '--', 'src/file.ts']);
+	fixture.runGit(['commit', '-m', 'add identifier handling']);
+	const issues = ['Missing validation for id', 'Missing validation for idempotencyKey'];
+	let finderIndex = 0;
+	let verifierIndex = 0;
+	const {result, calls} = await review(fixture, call => {
+		if (call.role === 'verifier') {
+			return {content: verdictBlock({id: `F${++verifierIndex}`})};
+		}
+		const issue = issues[finderIndex++];
+		return {
+			content: issue ? findingBlock({
+				file: 'src/file.ts',
+				line: 3,
+				issue,
+				evidence: 'return {id, idempotencyKey};',
+			}) : 'NO FINDINGS',
+		};
+	});
+
+	t.is(calls.filter(call => call.role === 'verifier').length, 2);
+	t.is(result.status, 'completed');
+	t.deepEqual(result.findings.map(finding => finding.issue), issues);
 });

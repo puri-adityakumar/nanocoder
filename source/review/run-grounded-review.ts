@@ -232,6 +232,9 @@ export async function runGroundedReview(
 		...(signal ? {signal} : {}),
 	});
 	account(finder);
+	if (finder.incompleteReason) {
+		result.incompleteReasons.push(finder.incompleteReason);
+	}
 
 	if (finder.status === 'cancelled') {
 		reviewSpan.cancel('Cancelled while the finder was running');
@@ -353,6 +356,13 @@ export async function runGroundedReview(
 			return settle('cancelled');
 		}
 
+		if (verifier.incompleteReason) {
+			result.unverified.push({
+				finding,
+				reason: verifier.incompleteReason,
+			});
+			continue;
+		}
 		const verdict = parseVerdict(verifier.output, finding.id);
 		if (!verdict) {
 			result.unverified.push({

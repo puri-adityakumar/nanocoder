@@ -61,6 +61,45 @@ async function review(
 
 const divideFinding = findingBlock({file: 'src/file.ts', line: 3});
 
+test('a truncated finder retains complete findings without completing the review', async t => {
+	const fixture = featureFixture(t);
+	const {result} = await review(fixture, call =>
+		call.role === 'finder'
+			? {
+					content: `${divideFinding}\nFINDING\nFILE: src/file.ts\nLINE:`,
+					finishReason: 'length',
+				}
+			: {content: verdictBlock({})},
+	);
+	t.is(result.status, 'incomplete');
+	t.is(result.findings.length, 1);
+	t.regex(result.incompleteReasons.join('\n'), /finder output was cut off/);
+});
+
+test('truncated NO FINDINGS is not a clean review', async t => {
+	const fixture = featureFixture(t);
+	const {result, report} = await review(fixture, () => ({
+		content: 'NO FINDINGS',
+		finishReason: 'length',
+	}));
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /model output limit/);
+	t.false(report.includes('No verified issues found'));
+});
+
+test('a truncated verifier verdict cannot confirm a finding', async t => {
+	const fixture = featureFixture(t);
+	const {result} = await review(fixture, call =>
+		call.role === 'finder'
+			? {content: divideFinding}
+			: {content: verdictBlock({}), finishReason: 'length'},
+	);
+	t.is(result.status, 'incomplete');
+	t.is(result.findings.length, 0);
+	t.is(result.unverified.length, 1);
+	t.regex(result.unverified[0]!.reason, /output was cut off/);
+});
+
 test('a confirmed, cited finding is reported with its verification', async t => {
 	const fixture = featureFixture(t);
 	const {result, calls, report} = await review(fixture, call =>

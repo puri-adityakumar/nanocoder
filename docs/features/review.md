@@ -36,7 +36,7 @@ Models without native tool calling use the same text tool-call fallback as norma
 The report renders like a normal assistant reply, headed by the review status:
 
 - **completed**: the finder finished within budget, every changed text file was covered, and every cited issue was verified. Only a completed review says "No verified issues found".
-- **incomplete**: something limited coverage — the finder hit its budget, a file too large for the initial diff was never inspected, the finder's output could not be read, or some issues were not verified. The report lists why under **Why this review is incomplete**; treat it as partial.
+- **incomplete**: something limited coverage — the finder hit its budget, a file too large for the initial diff was never inspected, model output was cut off at its output limit, the finder's output could not be read, or some issues were not verified. Truncated verifier output cannot confirm an issue. The report lists why under **Why this review is incomplete**; treat it as partial.
 - **failed** or **cancelled**: the review stopped early; any partial results are labeled.
 
 While a review runs, a live activity view shows its agents, tool calls, and model calls. Press `d` to show details and `Esc` to cancel. The view only captures keys while the review is running.

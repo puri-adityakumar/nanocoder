@@ -44,6 +44,8 @@ export interface ReviewAgentOutcome {
 	status: ReviewAgentStatus;
 	output: string;
 	error?: string;
+	/** A model output limit made this run partial, even if the text parses. */
+	incompleteReason?: string;
 	turns: number;
 	toolCalls: number;
 	/** Paths passed to tools that read file content or diffs. */
@@ -128,6 +130,7 @@ export async function runReviewAgent(
 	let turns = 0;
 	let toolCalls = 0;
 	let malformedRetries = 0;
+	let incompleteReason: string | undefined;
 
 	const callModel = async (
 		purpose: string,
@@ -154,6 +157,9 @@ export async function runReviewAgent(
 				signal,
 			);
 			if (signal?.aborted) throw new ReviewCancelledError();
+			if (response.finishReason === 'length') {
+				incompleteReason = `${run.name} output was cut off at the model output limit`;
+			}
 			const message = response.choices[0]?.message;
 			const rawContent = stripThinkTags(message?.content ?? '').trim();
 			const usage = response.usage?.totalTokens;
@@ -222,6 +228,7 @@ export async function runReviewAgent(
 			status,
 			output,
 			...(error ? {error} : {}),
+			...(incompleteReason ? {incompleteReason} : {}),
 			turns,
 			toolCalls,
 			inspectedPaths,

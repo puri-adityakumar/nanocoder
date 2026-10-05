@@ -246,3 +246,13 @@ test('a model error fails the agent with its message', async t => {
 		'failed',
 	);
 });
+
+test('output-limit truncation keeps the report but marks it partial', async t => {
+	const {run} = agentRun(() => ({
+		content: 'NO FINDINGS',
+		finishReason: 'length',
+	}));
+	const outcome = await runReviewAgent(run);
+	t.is(outcome.output, 'NO FINDINGS');
+	t.regex(outcome.incompleteReason ?? '', /finder output was cut off/);
+});

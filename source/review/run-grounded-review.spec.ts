@@ -213,7 +213,54 @@ test('files too large for the prompt must be inspected before the review is comp
 			? {toolCalls: [{name: 'review_diff', args: {path: 'src/large.ts'}}]}
 			: {content: 'NO FINDINGS'},
 	);
-	t.is(inspected.result.status, 'completed');
+	t.is(inspected.result.status, 'incomplete');
+	t.regex(inspected.result.incompleteReasons.join('\n'), /src\/large.ts was only partially inspected/);
+});
+
+test('a one-line read does not cover a file omitted from the initial prompt', async t => {
+	const large = `${Array.from({length: 1600}, (_, index) => `const v${index} = ${index};`).join('\n')}\n`;
+	const fixture = featureFixture(t, {'src/large.ts': large});
+	for (const line of [1, 1600]) {
+		const {result} = await review(fixture, (_call, index) =>
+			index === 0
+				? {toolCalls: [{name: 'review_read_file', args: {path: 'src/large.ts', start_line: line, end_line: line}}]}
+				: {content: 'NO FINDINGS'},
+		);
+		t.is(result.status, 'incomplete');
+		t.regex(result.incompleteReasons.join('\n'), /only partially inspected/);
+	}
+});
+
+test('agent-side character clipping does not cover an otherwise untruncated diff', async t => {
+	const large = `${Array.from({length: 400}, (_, index) => `const v${index} = '${'x'.repeat(200)}';`).join('\n')}\n`;
+	const fixture = featureFixture(t, {'src/large.ts': large});
+	const {result, calls} = await review(fixture, (_call, index) =>
+		index === 0
+			? {toolCalls: [{name: 'review_diff', args: {path: 'src/large.ts'}}]}
+			: {content: 'NO FINDINGS'},
+	);
+	const output = calls[1]!.messages.at(-1)!.content;
+	t.true(output.includes('[output truncated]'));
+	t.false(output.includes('[diff truncated'));
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /only partially inspected/);
+});
+
+test('a complete tool diff or whole-file read can cover an omitted file', async t => {
+	const large = `${Array.from({length: 200}, (_, index) => `const v${index} = '${'x'.repeat(25)}';`).join('\n')}\n`;
+	const fixture = featureFixture(t, {'src/large.ts': large});
+	for (const name of ['review_diff', 'review_read_file']) {
+		const {client, calls} = createScriptedReviewClient(
+			(_call, index) =>
+				index === 0
+					? {toolCalls: [{name, args: {path: 'src/large.ts'}}]}
+					: {content: 'NO FINDINGS'},
+			{contextSize: 2000},
+		);
+		const {result} = await review(fixture, () => ({}), {client});
+		t.regex(calls[0]!.messages[1]!.content, /NOT included in the diff below[\s\S]*- src\/large.ts/);
+		t.is(result.status, 'completed');
+	}
 });
 
 test('findings the verifier could not judge, or beyond the verification cap, are unverified', async t => {

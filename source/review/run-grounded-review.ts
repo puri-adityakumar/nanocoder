@@ -260,6 +260,16 @@ export async function runGroundedReview(
 			`${uninspected.length} changed file${uninspected.length === 1 ? ' was' : 's were'} too large for the initial diff and never inspected: ${listPaths(uninspected)}.`,
 		);
 	}
+	for (const path of promptDiff.omittedPaths) {
+		if (
+			finder.inspectedPaths.has(path) &&
+			!finder.fullyInspectedPaths.has(path)
+		) {
+			result.incompleteReasons.push(
+				`${path} was only partially inspected (a limited range or output truncated).`,
+			);
+		}
+	}
 
 	const parsed = parseFindings(finder.output);
 	result.stats.reported = parsed.findings.length + parsed.malformed.length;

@@ -50,6 +50,8 @@ export interface ReviewAgentOutcome {
 	toolCalls: number;
 	/** Paths passed to tools that read file content or diffs. */
 	inspectedPaths: Set<string>;
+	/** Paths whose entire diff or file content reached the model without clipping. */
+	fullyInspectedPaths: Set<string>;
 }
 
 const MAX_TOOL_RESULT_CHARS = 12_000;
@@ -121,6 +123,7 @@ export async function runReviewAgent(
 		{role: 'user', content: run.userPrompt},
 	];
 	const inspectedPaths = new Set<string>();
+	const fullyInspectedPaths = new Set<string>();
 	const span = activity.begin({
 		source: 'agent',
 		name: run.name,
@@ -232,6 +235,7 @@ export async function runReviewAgent(
 			turns,
 			toolCalls,
 			inspectedPaths,
+			fullyInspectedPaths,
 		};
 	};
 
@@ -352,6 +356,12 @@ export async function runReviewAgent(
 				: null;
 			if (inspected && !result.startsWith('Error:')) {
 				inspectedPaths.add(inspected);
+				if (
+					result.length <= MAX_TOOL_RESULT_CHARS &&
+					entry.coversWholeFile?.(args, result)
+				) {
+					fullyInspectedPaths.add(inspected);
+				}
 			}
 			if (result.startsWith('Error:')) toolSpan.fail(result.slice(7).trim());
 			else toolSpan.complete(description.summary);

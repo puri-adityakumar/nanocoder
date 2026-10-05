@@ -20,7 +20,7 @@ sidebar_order: 23
 | `/review quick [<branch or PR>]` | The one-shot diff review |
 | `/review activity` | The detailed activity trace of the latest review in this session |
 
-When a target is ambiguous (for example a local and a remote branch with the same name) the review stops and lists the choices instead of guessing.
+When a target is ambiguous (for example a local and a remote branch with the same name) the review stops and lists the choices instead of guessing. Working-tree reviews read your changes through a scratch Git index, so staged changes and files are never modified.
 
 ## How a grounded review works
 

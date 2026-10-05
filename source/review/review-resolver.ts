@@ -812,7 +812,7 @@ async function snapshotCommitRange(
 	remoteRepository?: string,
 ): Promise<ReviewTargetSnapshot> {
 	const output = await git(
-		['rev-list', `--max-count=${count + 1}`, headOid],
+		['rev-list', '--first-parent', `--max-count=${count + 1}`, headOid],
 		'Selecting the requested recent commits',
 		tools,
 		activity,

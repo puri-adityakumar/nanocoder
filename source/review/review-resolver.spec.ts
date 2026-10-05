@@ -130,6 +130,48 @@ test('resolves recent commits by SHA and includes changed-line mappings', async 
 	t.deepEqual(result.snapshot.files[0]?.lineMap.changedHeadLines, [1]);
 });
 
+for (const count of [1, 2]) {
+	test(`recent ${count} commits follow first-parent merge history`, async t => {
+		const fixture = createReviewGitFixture();
+		t.teardown(fixture.cleanup);
+		const commitAt = (date: string, message: string, amend = false) =>
+			execFileSync('git', ['-C', fixture.root, 'commit', '-m', message, ...(amend ? ['--amend'] : [])], {
+				stdio: 'ignore',
+				env: {
+					...process.env,
+					GIT_CONFIG_GLOBAL: '/dev/null',
+					GIT_CONFIG_NOSYSTEM: '1',
+					GIT_TERMINAL_PROMPT: '0',
+					GIT_AUTHOR_DATE: date,
+					GIT_COMMITTER_DATE: date,
+				},
+			});
+		commitAt('2019-01-01T00:00:00Z', 'initial commit', true);
+		fixture.runGit(['branch', 'side']);
+		fixture.write('src/file.ts', 'mainline change\n');
+		fixture.runGit(['add', '--', 'src/file.ts']);
+		commitAt('2020-01-01T00:00:00Z', 'mainline change');
+		fixture.runGit(['checkout', 'side']);
+		fixture.write('src/side.ts', 'merged side change\n');
+		fixture.runGit(['add', '--', 'src/side.ts']);
+		commitAt('2020-01-02T00:00:00Z', 'newer side change');
+		fixture.runGit(['checkout', 'main']);
+		fixture.runGit(['merge', '--no-ff', 'side', '-m', 'merge side']);
+		const expectedBase = fixture.runGit(['rev-parse', `HEAD~${count}`]);
+		const result = await resolveReviewScope(`/review last ${count} commits`, {
+			tools: createReviewFixtureTools(fixture),
+		});
+
+		t.is(result.status, 'ready');
+		if (result.status !== 'ready') return;
+		t.is(result.snapshot.baseOid, expectedBase);
+		t.is(
+			result.snapshot.files.find(file => file.path === 'src/side.ts')?.headContent,
+			'merged side change\n',
+		);
+	});
+}
+
 test('default scope asks when dirty worktree changes and upstream-ahead commits coexist', async t => {
 	const fixture = createReviewGitFixture();
 	t.teardown(fixture.cleanup);

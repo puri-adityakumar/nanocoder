@@ -143,6 +143,29 @@ test('a clean review requires the NO FINDINGS sentinel and runs no verifier', as
 	t.true(report.includes('No verified issues found in the reviewed scope.'));
 });
 
+test('removing only a null guard retains the finding and runs the verifier', async t => {
+	const fixture = createReviewGitFixture();
+	t.teardown(fixture.cleanup);
+	fixture.write('src/file.ts', 'export function name(user) {\n\tif (!user) return null;\n\treturn user.name;\n}\n');
+	fixture.runGit(['add', '--all']);
+	fixture.runGit(['commit', '-m', 'add guarded function']);
+	fixture.runGit(['push', 'origin', 'main']);
+	fixture.runGit(['checkout', '-b', 'feature/grounded']);
+	fixture.write('src/file.ts', 'export function name(user) {\n\treturn user.name;\n}\n');
+	fixture.runGit(['add', '--all']);
+	fixture.runGit(['commit', '-m', 'remove null guard']);
+	const {result, calls} = await review(fixture, call =>
+		call.role === 'finder'
+			? {content: findingBlock({file: 'src/file.ts', line: 2, issue: 'Null dereference', evidence: 'return user.name;'})}
+			: {content: verdictBlock({reason: 'The null guard was removed and user may be null'})},
+	);
+	t.is(result.status, 'completed');
+	t.is(result.stats.verifierRuns, 1);
+	t.is(calls.filter(call => call.role === 'verifier').length, 1);
+	t.is(result.findings.length, 1);
+	t.deepEqual(result.dropped, []);
+});
+
 test('bad citations, rejections, and low-confidence confirmations are dropped', async t => {
 	const fixture = featureFixture(t);
 	const finderOutput = [

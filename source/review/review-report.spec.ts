@@ -32,7 +32,7 @@ test('a completed clean review says no verified issues were found', t => {
 	const report = renderGroundedReviewReport(result({}));
 	t.true(report.startsWith('## Grounded review · completed'));
 	t.true(report.includes('No verified issues found in the reviewed scope.'));
-	t.true(report.includes('2 model calls · 3 tool calls · 0 verifier runs'));
+	t.true(report.endsWith('*2 model calls · 3 tool calls · 0 verifier runs · review abcdef01*'));
 });
 
 test('an incomplete review never claims to be clean and explains why', t => {

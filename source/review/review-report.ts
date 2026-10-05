@@ -114,7 +114,7 @@ export function renderGroundedReviewReport(
 
 	if (result.stats.modelCalls > 0) {
 		sections.push(
-			`_${result.stats.modelCalls} model call${result.stats.modelCalls === 1 ? '' : 's'} · ${result.stats.toolCalls} tool call${result.stats.toolCalls === 1 ? '' : 's'} · ${result.stats.verifierRuns} verifier run${result.stats.verifierRuns === 1 ? '' : 's'} · review ${result.reviewId.slice(0, 8)}_`,
+			`*${result.stats.modelCalls} model call${result.stats.modelCalls === 1 ? '' : 's'} · ${result.stats.toolCalls} tool call${result.stats.toolCalls === 1 ? '' : 's'} · ${result.stats.verifierRuns} verifier run${result.stats.verifierRuns === 1 ? '' : 's'} · review ${result.reviewId.slice(0, 8)}*`,
 		);
 	}
 	return sections.join('\n\n');

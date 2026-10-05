@@ -1,5 +1,7 @@
-import {createHash, randomUUID} from 'node:crypto';
-import {isAbsolute, relative, resolve, sep} from 'node:path';
+import {createHash} from 'node:crypto';
+import {copyFile, mkdtemp, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {structuredPatch} from 'diff';
 import type {ReviewActivityStore} from './review-activity';
 import {
@@ -56,14 +58,11 @@ export interface ReviewSnapshotDependencies {
 }
 
 export interface TemporaryReviewRefSet {
-	namespace: string;
 	fetch: (
 		remote: string,
 		sourceRef: string,
-		key: string,
 		expectedOid?: string,
 	) => Promise<string>;
-	cleanup: () => Promise<void>;
 }
 
 export interface ReviewChangedPath {
@@ -72,7 +71,6 @@ export interface ReviewChangedPath {
 }
 
 const REVIEW_REF_ROOT = 'refs/nanocoder/review';
-const REVIEW_REF_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_REVIEW_FILES = 250;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 5 * 1024 * 1024;
@@ -134,17 +132,7 @@ function decodeText(buffer: Buffer): string | null {
 	}
 }
 
-function contentDigest(buffer: Buffer): string {
-	return createHash('sha256').update(buffer).digest('hex');
-}
-
-function absentContent(): {content: null; size: 0; digest: string} {
-	return {
-		content: null,
-		size: 0,
-		digest: createHash('sha256').update('[absent]').digest('hex'),
-	};
-}
+const ABSENT = {content: null, size: 0} as const;
 
 function mapChangedLines(
 	baseContent: string | null,
@@ -209,7 +197,7 @@ async function getRepositoryRoot(
 	activity: ReviewActivityStore,
 	signal?: AbortSignal,
 ): Promise<string> {
-	const path = await trackReviewOperation(
+	return trackReviewOperation(
 		activity,
 		'tool',
 		'git',
@@ -218,16 +206,15 @@ async function getRepositoryRoot(
 		signal,
 		() => tools.execGit(['rev-parse', '--show-toplevel'], signal),
 	);
-	return tools.realpath(path);
 }
 
-async function readCommitBlob(
-	oid: string,
+async function readBlob(
+	treeish: string,
 	path: string,
 	dependencies: ReviewSnapshotDependencies,
-): Promise<{content: string | null; size: number; digest: string}> {
+): Promise<{content: string | null; size: number}> {
 	const tools = dependencies.tools ?? defaultReviewFoundationTools;
-	const objectName = `${assertOid(oid)}:${path}`;
+	const objectName = `${assertOid(treeish)}:${path}`;
 	const objectType = await trackReviewOperation(
 		dependencies.activity,
 		'tool',
@@ -237,15 +224,8 @@ async function readCommitBlob(
 		dependencies.signal,
 		() => tools.execGit(['cat-file', '-t', objectName], dependencies.signal),
 	);
-	if (objectType !== 'blob') {
-		return {
-			content: null,
-			size: 0,
-			digest: createHash('sha256')
-				.update(`${objectType}:${objectName}`)
-				.digest('hex'),
-		};
-	}
+	// Submodule entries are commits, not blobs; there is no content to read.
+	if (objectType !== 'blob') return {content: null, size: 0};
 	const sizeText = await trackReviewOperation(
 		dependencies.activity,
 		'tool',
@@ -277,149 +257,57 @@ async function readCommitBlob(
 				dependencies.signal,
 			),
 	);
-	return {content: decodeText(bytes), size, digest: contentDigest(bytes)};
+	return {content: decodeText(bytes), size};
 }
 
-async function readWorkingTreeContent(
-	repositoryRoot: string,
-	path: string,
+/**
+ * Read every changed file between two pinned tree-ish IDs (commits or trees).
+ * Limits fail the whole snapshot rather than returning a partial scope.
+ */
+async function readChangedFiles(
+	baseOid: string,
+	headTreeish: string,
 	dependencies: ReviewSnapshotDependencies,
-): Promise<{content: string | null; size: number; digest: string}> {
+): Promise<ReviewFileSnapshot[]> {
 	const tools = dependencies.tools ?? defaultReviewFoundationTools;
-	assertSafeReviewPath(path);
-	const absolutePath = resolve(repositoryRoot, ...path.split('/'));
-	const pathFromRoot = relative(repositoryRoot, absolutePath);
-	if (
-		!pathFromRoot ||
-		pathFromRoot === '..' ||
-		pathFromRoot.startsWith(`..${sep}`) ||
-		isAbsolute(pathFromRoot)
-	) {
-		throw new Error(
-			'Changed path escaped the repository root; no files were read.',
-		);
-	}
-	const stat = await tools.lstat(absolutePath);
-	if (stat.isSymbolicLink()) {
-		const target = await tools.readlink(absolutePath);
-		const content = Buffer.from(target);
-		if (content.byteLength > MAX_FILE_BYTES) {
-			throw new Error(`Changed symlink "${path}" exceeds the snapshot limit.`);
-		}
-		return {
-			content: decodeText(content),
-			size: content.byteLength,
-			digest: contentDigest(content),
-		};
-	}
-	if (!stat.isFile()) {
-		throw new Error(
-			`Changed path "${path}" is not a regular file; no review was started.`,
-		);
-	}
-	if (stat.size > MAX_FILE_BYTES) {
-		throw new Error(
-			`Changed file "${path}" exceeds the ${MAX_FILE_BYTES / 1024} KiB snapshot limit; no review was started.`,
-		);
-	}
-	const resolvedPath = await tools.realpath(absolutePath);
-	const resolvedRelativePath = relative(repositoryRoot, resolvedPath);
-	if (
-		resolvedRelativePath === '..' ||
-		resolvedRelativePath.startsWith(`..${sep}`) ||
-		isAbsolute(resolvedRelativePath)
-	) {
-		throw new Error(
-			'Changed path resolved outside the repository root; no files were read.',
-		);
-	}
-	const content = await tools.readFile(resolvedPath);
-	if (content.byteLength > MAX_FILE_BYTES) {
-		throw new Error(
-			`Changed file "${path}" exceeds the ${MAX_FILE_BYTES / 1024} KiB snapshot limit; no review was started.`,
-		);
-	}
-	return {
-		content: decodeText(content),
-		size: content.byteLength,
-		digest: contentDigest(content),
-	};
-}
-
-function assertFileCount(files: ReviewChangedPath[]): void {
-	if (files.length > MAX_REVIEW_FILES) {
-		throw new Error(
-			`Review scope has ${files.length} files; the safe snapshot limit is ${MAX_REVIEW_FILES}. Narrow the requested scope.`,
-		);
-	}
-}
-
-export async function createCommitSnapshot(
-	input: {
-		baseOid: string;
-		headOid: string;
-		scope: ReviewSnapshotScope;
-		remoteRepository?: string;
-		baseTipOid?: string;
-	},
-	dependencies: ReviewSnapshotDependencies,
-): Promise<ReviewTargetSnapshot> {
-	const tools = dependencies.tools ?? defaultReviewFoundationTools;
-	throwIfReviewAborted(dependencies.signal);
-	const baseOid = assertOid(input.baseOid);
-	const headOid = assertOid(input.headOid);
-	const repositoryRoot = await getRepositoryRoot(
-		tools,
-		dependencies.activity,
-		dependencies.signal,
-	);
+	const diffArgs = [
+		'diff',
+		'--name-status',
+		'-z',
+		'--no-renames',
+		'--no-ext-diff',
+		'--no-color',
+		baseOid,
+		headTreeish,
+		'--',
+	];
 	const nameStatus = await trackReviewOperation(
 		dependencies.activity,
 		'tool',
 		'git',
-		[
-			'diff',
-			'--name-status',
-			'-z',
-			'--no-renames',
-			'--no-ext-diff',
-			'--no-color',
-			baseOid,
-			headOid,
-			'--',
-		],
+		diffArgs,
 		'Finding changed files between pinned revisions',
 		dependencies.signal,
-		() =>
-			tools.execGitBuffer(
-				[
-					'diff',
-					'--name-status',
-					'-z',
-					'--no-renames',
-					'--no-ext-diff',
-					'--no-color',
-					baseOid,
-					headOid,
-					'--',
-				],
-				dependencies.signal,
-			),
+		() => tools.execGitBuffer(diffArgs, dependencies.signal),
 	);
 	const changed = parseNameStatusZ(nameStatus.toString('utf8'));
-	assertFileCount(changed);
+	if (changed.length > MAX_REVIEW_FILES) {
+		throw new Error(
+			`Review scope has ${changed.length} files; the safe snapshot limit is ${MAX_REVIEW_FILES}. Narrow the requested scope.`,
+		);
+	}
 	const files: ReviewFileSnapshot[] = [];
 	let totalBytes = 0;
 	for (const file of changed) {
 		throwIfReviewAborted(dependencies.signal);
 		const base =
 			file.status === 'added'
-				? absentContent()
-				: await readCommitBlob(baseOid, file.path, dependencies);
+				? ABSENT
+				: await readBlob(baseOid, file.path, dependencies);
 		const head =
 			file.status === 'deleted'
-				? absentContent()
-				: await readCommitBlob(headOid, file.path, dependencies);
+				? ABSENT
+				: await readBlob(headTreeish, file.path, dependencies);
 		totalBytes += base.size + head.size;
 		if (totalBytes > MAX_TOTAL_FILE_BYTES) {
 			throw new Error(
@@ -441,6 +329,29 @@ export async function createCommitSnapshot(
 		});
 	}
 	throwIfReviewAborted(dependencies.signal);
+	return files;
+}
+
+export async function createCommitSnapshot(
+	input: {
+		baseOid: string;
+		headOid: string;
+		scope: ReviewSnapshotScope;
+		remoteRepository?: string;
+		baseTipOid?: string;
+	},
+	dependencies: ReviewSnapshotDependencies,
+): Promise<ReviewTargetSnapshot> {
+	const tools = dependencies.tools ?? defaultReviewFoundationTools;
+	throwIfReviewAborted(dependencies.signal);
+	const baseOid = assertOid(input.baseOid);
+	const headOid = assertOid(input.headOid);
+	const repositoryRoot = await getRepositoryRoot(
+		tools,
+		dependencies.activity,
+		dependencies.signal,
+	);
+	const files = await readChangedFiles(baseOid, headOid, dependencies);
 	return makeSnapshot(
 		repositoryRoot,
 		baseOid,
@@ -453,6 +364,56 @@ export async function createCommitSnapshot(
 		input.remoteRepository,
 		input.baseTipOid,
 	);
+}
+
+/**
+ * Record the worktree (tracked changes plus untracked, non-ignored files) as a
+ * Git tree through a throwaway index, so the real index and files are never
+ * touched and the review reads one pinned tree like any commit review.
+ */
+async function writeWorkingTree(
+	repositoryRoot: string,
+	dependencies: ReviewSnapshotDependencies,
+): Promise<string> {
+	const tools = dependencies.tools ?? defaultReviewFoundationTools;
+	const indexArgs = [
+		'rev-parse',
+		'--path-format=absolute',
+		'--git-path',
+		'index',
+	];
+	const realIndex = await tools.execGit(indexArgs, dependencies.signal);
+	const directory = await mkdtemp(join(tmpdir(), 'nanocoder-review-index-'));
+	const scratchIndex = join(directory, 'index');
+	try {
+		// Starting from a copy keeps Git's stat cache, so unchanged files are
+		// not re-hashed. A repository without an index starts empty.
+		await copyFile(realIndex, scratchIndex).catch(() => undefined);
+		const env = {GIT_INDEX_FILE: scratchIndex};
+		const addArgs = ['-C', repositoryRoot, 'add', '--all', '--', '.'];
+		await trackReviewOperation(
+			dependencies.activity,
+			'tool',
+			'git',
+			addArgs,
+			'Recording worktree changes in a scratch index',
+			dependencies.signal,
+			() => tools.execGit(addArgs, dependencies.signal, env),
+		);
+		return assertOid(
+			await trackReviewOperation(
+				dependencies.activity,
+				'tool',
+				'git',
+				['write-tree'],
+				'Pinning the worktree as a tree ID',
+				dependencies.signal,
+				() => tools.execGit(['write-tree'], dependencies.signal, env),
+			),
+		);
+	} finally {
+		await rm(directory, {recursive: true, force: true});
+	}
 }
 
 export async function createWorkingTreeSnapshot(
@@ -483,96 +444,8 @@ export async function createWorkingTreeSnapshot(
 				),
 		),
 	);
-	const tracked = await trackReviewOperation(
-		dependencies.activity,
-		'tool',
-		'git',
-		['diff', '--name-status', '-z', '--no-renames', 'HEAD', '--'],
-		'Finding tracked worktree changes',
-		dependencies.signal,
-		() =>
-			tools.execGitBuffer(
-				['diff', '--name-status', '-z', '--no-renames', 'HEAD', '--'],
-				dependencies.signal,
-			),
-	);
-	const untrackedOutput = await trackReviewOperation(
-		dependencies.activity,
-		'tool',
-		'git',
-		[
-			'-C',
-			repositoryRoot,
-			'ls-files',
-			'--others',
-			'--exclude-standard',
-			'--full-name',
-			'-z',
-		],
-		'Finding untracked worktree files',
-		dependencies.signal,
-		() =>
-			tools.execGitBuffer(
-				[
-					'-C',
-					repositoryRoot,
-					'ls-files',
-					'--others',
-					'--exclude-standard',
-					'--full-name',
-					'-z',
-				],
-				dependencies.signal,
-			),
-	);
-	const changed = parseNameStatusZ(tracked.toString('utf8'));
-	const seen = new Set(changed.map(file => file.path));
-	for (const path of untrackedOutput
-		.toString('utf8')
-		.split('\0')
-		.filter(Boolean)) {
-		assertSafeReviewPath(path);
-		if (!seen.has(path)) changed.push({path, status: 'added'});
-	}
-	assertFileCount(changed);
-
-	const files: ReviewFileSnapshot[] = [];
-	let totalBytes = 0;
-	const digest = createHash('sha256');
-	for (const file of changed) {
-		throwIfReviewAborted(dependencies.signal);
-		const base =
-			file.status === 'added'
-				? absentContent()
-				: await readCommitBlob(headOid, file.path, dependencies);
-		const head =
-			file.status === 'deleted'
-				? absentContent()
-				: await readWorkingTreeContent(repositoryRoot, file.path, dependencies);
-		totalBytes += base.size + head.size;
-		if (totalBytes > MAX_TOTAL_FILE_BYTES) {
-			throw new Error(
-				`Worktree snapshot exceeds the ${MAX_TOTAL_FILE_BYTES / 1024 / 1024} MiB content limit; narrow the requested scope.`,
-			);
-		}
-		const isBinary =
-			(base.content === null && base.size > 0) ||
-			(head.content === null && head.size > 0);
-		const baseContent = isBinary ? null : base.content;
-		const headContent = isBinary ? null : head.content;
-		digest.update(file.path).update('\0').update(file.status).update('\0');
-		digest.update(base.digest).update('\0');
-		digest.update(head.digest).update('\0');
-		files.push({
-			path: file.path,
-			status: file.status,
-			baseContent,
-			headContent,
-			isBinary,
-			lineMap: mapChangedLines(baseContent, headContent),
-		});
-	}
-	throwIfReviewAborted(dependencies.signal);
+	const treeOid = await writeWorkingTree(repositoryRoot, dependencies);
+	const files = await readChangedFiles(headOid, treeOid, dependencies);
 	return makeSnapshot(
 		repositoryRoot,
 		headOid,
@@ -581,84 +454,26 @@ export async function createWorkingTreeSnapshot(
 		input.scope,
 		files,
 		dependencies.now ?? Date.now,
-		digest.digest('hex'),
+		treeOid,
 	);
 }
 
-function parseTemporaryRef(ref: string): {
-	namespace: string;
-	createdAt: number;
-} | null {
-	const match = ref.match(
-		/^refs\/nanocoder\/review\/(\d{13}-[0-9a-f-]{36})(?:\/.*)?$/,
-	);
-	if (!match) return null;
-	const createdAt = Number(match[1]?.slice(0, 13));
-	if (!Number.isSafeInteger(createdAt)) return null;
-	return {
-		namespace: `${REVIEW_REF_ROOT}/${match[1]}`,
-		createdAt,
-	};
-}
-
-export async function cleanupStaleReviewRefs(
-	tools: ReviewFoundationTools = defaultReviewFoundationTools,
-	now: () => number = Date.now,
-): Promise<string[]> {
-	const refs = await tools.execGit([
-		'for-each-ref',
-		'--format=%(refname)',
-		`${REVIEW_REF_ROOT}/`,
-	]);
-	const deleted: string[] = [];
-	const namespaces = new Map<string, number>();
-	for (const ref of refs.split(/\r?\n/).filter(Boolean)) {
-		const parsed = parseTemporaryRef(ref);
-		if (!parsed || now() - parsed.createdAt <= REVIEW_REF_TTL_MS) continue;
-		namespaces.set(parsed.namespace, parsed.createdAt);
-	}
-	for (const namespace of namespaces.keys()) {
-		for (const ref of refs
-			.split(/\r?\n/)
-			.filter(candidate => candidate.startsWith(`${namespace}/`))) {
-			await tools.execGit(['update-ref', '-d', ref]);
-			deleted.push(ref);
-		}
-	}
-	return deleted;
-}
-
+/**
+ * Fetch remote revisions into fixed refs named after their source, so a
+ * rerun overwrites the same ref and two concurrent reviews of different
+ * targets can never read each other's tips. The refs are removed afterwards
+ * on a best-effort basis; one left behind by a crash is overwritten next run.
+ */
 export async function withTemporaryReviewRefs<T>(
 	dependencies: ReviewSnapshotDependencies,
 	operation: (refs: TemporaryReviewRefSet) => Promise<T>,
 ): Promise<T> {
 	const tools = dependencies.tools ?? defaultReviewFoundationTools;
-	const now = dependencies.now ?? Date.now;
 	throwIfReviewAborted(dependencies.signal);
-	await trackReviewOperation(
-		dependencies.activity,
-		'tool',
-		'git',
-		['for-each-ref', '--format=%(refname)', `${REVIEW_REF_ROOT}/`],
-		'Checking for abandoned review refs',
-		dependencies.signal,
-		() => cleanupStaleReviewRefs(tools, now),
-	);
-
-	const namespace = `${REVIEW_REF_ROOT}/${String(now()).padStart(13, '0')}-${randomUUID()}`;
-	const createdRefs: string[] = [];
-	let operationError: unknown;
+	const createdRefs = new Set<string>();
 	const refs: TemporaryReviewRefSet = {
-		namespace,
-		fetch: async (remote, sourceRef, key, expectedOid) => {
+		fetch: async (remote, sourceRef, expectedOid) => {
 			throwIfReviewAborted(dependencies.signal);
-			if (
-				!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/.test(key) ||
-				key.includes('..') ||
-				key.endsWith('/')
-			) {
-				throw new Error('Invalid internal snapshot ref name.');
-			}
 			if (
 				!sourceRef.startsWith('refs/') ||
 				sourceRef.includes('\0') ||
@@ -667,8 +482,12 @@ export async function withTemporaryReviewRefs<T>(
 				throw new Error('Remote revision name is not a valid ref.');
 			}
 			await tools.execGit(['check-ref-format', sourceRef], dependencies.signal);
-			const destinationRef = `${namespace}/${key}`;
-			createdRefs.push(destinationRef);
+			const remoteKey = createHash('sha256')
+				.update(remote)
+				.digest('hex')
+				.slice(0, 12);
+			const destinationRef = `${REVIEW_REF_ROOT}/${remoteKey}/${sourceRef.slice('refs/'.length)}`;
+			createdRefs.add(destinationRef);
 			const fetchArgs = [
 				'fetch',
 				'--no-tags',
@@ -688,29 +507,21 @@ export async function withTemporaryReviewRefs<T>(
 				dependencies.signal,
 				() => tools.execGit(fetchArgs, dependencies.signal),
 			);
+			const verifyArgs = [
+				'rev-parse',
+				'--verify',
+				'--end-of-options',
+				`${destinationRef}^{commit}`,
+			];
 			const oid = assertOid(
 				await trackReviewOperation(
 					dependencies.activity,
 					'tool',
 					'git rev-parse',
-					[
-						'rev-parse',
-						'--verify',
-						'--end-of-options',
-						`${destinationRef}^{commit}`,
-					],
+					verifyArgs,
 					'Verifying the fetched revision ID',
 					dependencies.signal,
-					() =>
-						tools.execGit(
-							[
-								'rev-parse',
-								'--verify',
-								'--end-of-options',
-								`${destinationRef}^{commit}`,
-							],
-							dependencies.signal,
-						),
+					() => tools.execGit(verifyArgs, dependencies.signal),
 				),
 			);
 			if (expectedOid && oid !== assertOid(expectedOid)) {
@@ -720,43 +531,13 @@ export async function withTemporaryReviewRefs<T>(
 			}
 			return oid;
 		},
-		cleanup: async () => {
-			const errors: unknown[] = [];
-			for (const ref of [...createdRefs].reverse()) {
-				try {
-					await tools.execGit(['update-ref', '-d', ref]);
-				} catch (error) {
-					errors.push(error);
-				}
-			}
-			if (errors.length > 0) {
-				throw new AggregateError(
-					errors,
-					'One or more temporary review refs could not be removed.',
-				);
-			}
-		},
 	};
 
 	try {
 		return await operation(refs);
-	} catch (error) {
-		operationError = error;
-		throw error;
 	} finally {
-		try {
-			await refs.cleanup();
-		} catch (cleanupError) {
-			if (operationError) {
-				throw new AggregateError(
-					[operationError, cleanupError],
-					'Review failed and temporary refs could not be removed; rerun /review after checking Git refs under refs/nanocoder/review/.',
-				);
-			}
-			throw new Error(
-				'Review completed but temporary refs could not be removed; rerun /review after checking Git refs under refs/nanocoder/review/.',
-				{cause: cleanupError},
-			);
+		for (const ref of createdRefs) {
+			await tools.execGit(['update-ref', '-d', ref]).catch(() => undefined);
 		}
 	}
 }

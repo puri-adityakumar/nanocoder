@@ -10,7 +10,7 @@ import {
 export interface ReviewGitFixture {
 	root: string;
 	remote: string;
-	runGit: (args: string[]) => string;
+	runGit: (args: string[], env?: Record<string, string>) => string;
 	runGitBuffer: (args: string[]) => Buffer;
 	runRemoteGit: (args: string[]) => string;
 	write: (path: string, content: string) => void;
@@ -39,10 +39,10 @@ export function createReviewGitFixture(): ReviewGitFixture {
 		env: FIXTURE_GIT_ENV,
 	});
 
-	const runGit = (args: string[]) =>
+	const runGit = (args: string[], env?: Record<string, string>) =>
 		execFileSync('git', ['-C', root, ...args], {
 			encoding: 'utf8',
-			env: FIXTURE_GIT_ENV,
+			env: env ? {...FIXTURE_GIT_ENV, ...env} : FIXTURE_GIT_ENV,
 		}).trimEnd();
 	const runGitBuffer = (args: string[]) =>
 		execFileSync('git', ['-C', root, ...args], {env: FIXTURE_GIT_ENV});
@@ -89,9 +89,9 @@ export function createReviewFixtureTools(
 ): ReviewFoundationTools {
 	return {
 		...defaultReviewFoundationTools,
-		execGit: async (args, signal) => {
+		execGit: async (args, signal, env) => {
 			if (signal?.aborted) throw new Error('cancelled');
-			return fixture.runGit(args);
+			return fixture.runGit(args, env);
 		},
 		execGitBuffer: async (args, signal) => {
 			if (signal?.aborted) throw new Error('cancelled');

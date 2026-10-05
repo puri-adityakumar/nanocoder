@@ -130,7 +130,7 @@ export function formatResolvedReviewScope(
 	);
 	const headDescription =
 		snapshot.headKind === 'working-tree'
-			? `working tree · sha256:${snapshot.headDigest?.slice(0, 12) ?? 'unavailable'}`
+			? `working tree · tree ${snapshot.headDigest?.slice(0, 12) ?? 'unavailable'}`
 			: snapshot.headOid.slice(0, 12);
 	const baseTip =
 		snapshot.baseTipOid && snapshot.baseTipOid !== snapshot.baseOid
@@ -674,7 +674,6 @@ async function snapshotBranch(
 				: await refs.fetch(
 						candidate.remote,
 						`refs/heads/${candidate.name}`,
-						'head',
 						candidate.oid,
 					);
 		const preferredRemote =
@@ -688,12 +687,7 @@ async function snapshotBranch(
 		);
 		const baseOid =
 			base.remote && base.oid
-				? await refs.fetch(
-						base.remote,
-						`refs/heads/${base.name}`,
-						'base',
-						base.oid,
-					)
+				? await refs.fetch(base.remote, `refs/heads/${base.name}`, base.oid)
 				: (base.oid ??
 					(await resolveCommit(
 						`refs/heads/${base.name}`,
@@ -760,7 +754,6 @@ async function snapshotRecentCommits(
 					const remoteHead = await refs.fetch(
 						candidate.remote,
 						`refs/heads/${candidate.name}`,
-						'head',
 						candidate.oid,
 					);
 					return snapshotCommitRange(
@@ -956,7 +949,6 @@ async function snapshotDefaultScope(
 				const pinnedUpstream = await refs.fetch(
 					upstream.remote,
 					`refs/heads/${upstream.name}`,
-					'base',
 					upstreamOid,
 				);
 				const counts = splitLines(
@@ -1218,14 +1210,9 @@ async function resolvePullRequest(
 		const headOid = await refs.fetch(
 			remote,
 			`refs/pull/${pull.number}/head`,
-			'head',
 			pull.headOid,
 		);
-		const baseOid = await refs.fetch(
-			remote,
-			`refs/heads/${pull.baseRef}`,
-			'base',
-		);
+		const baseOid = await refs.fetch(remote, `refs/heads/${pull.baseRef}`);
 		const mergeBase = await getMergeBase(
 			baseOid,
 			headOid,

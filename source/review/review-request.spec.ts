@@ -107,3 +107,10 @@ test('GitHub remote parsing returns only the slug for credentialed HTTPS remotes
 		'org/repo',
 	);
 });
+
+test('GitHub remote parsing accepts www hosts case-insensitively without trusting lookalikes', t => {
+	t.is(parseGitHubRepository('https://www.github.com/acme/repo.git'), 'acme/repo');
+	t.is(parseGitHubRepository('https://WWW.GITHUB.COM/acme/repo.git'), 'acme/repo');
+	t.is(parseGitHubRepository('https://www.github.com.attacker.test/acme/repo.git'), null);
+	t.is(parseGitHubRepository('https://www.github.com:8443/acme/repo.git'), null);
+});

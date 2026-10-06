@@ -280,11 +280,12 @@ function execProcessRaw(
 	args: string[],
 	label: string,
 	signal?: AbortSignal,
+	env?: Record<string, string>,
 ): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const proc = spawn(command, args, {
 			stdio: ['ignore', 'pipe', 'pipe'],
-			env: GIT_ENV,
+			env: env ? {...GIT_ENV, ...env} : GIT_ENV,
 			signal,
 		});
 		const stdout: Buffer[] = [];
@@ -349,20 +350,23 @@ function execProcess(
 	args: string[],
 	label: string,
 	signal?: AbortSignal,
+	env?: Record<string, string>,
 ): Promise<string> {
-	return execProcessRaw(command, args, label, signal).then(output =>
+	return execProcessRaw(command, args, label, signal, env).then(output =>
 		output.toString().trimEnd(),
 	);
 }
 
 /**
- * Execute a git command and return the output
+ * Execute a git command and return the output. `env` adds variables such as
+ * GIT_INDEX_FILE on top of the default Git environment.
  */
 export async function execGit(
 	args: string[],
 	signal?: AbortSignal,
+	env?: Record<string, string>,
 ): Promise<string> {
-	return execProcess('git', args, 'Git', signal);
+	return execProcess('git', args, 'Git', signal, env);
 }
 
 /** Execute git and preserve stdout bytes exactly for target file snapshots. */

@@ -21,14 +21,14 @@ sidebar_order: 23
 | `/review quick [<branch or PR>]` | The one-shot diff review |
 | `/review activity` | The detailed activity trace of the latest review in this session |
 
-When a target is ambiguous (for example a local and a remote branch with the same name) the review stops and lists the choices instead of guessing.
+When a target is ambiguous (for example a local and a remote branch with the same name) the review stops and lists the choices instead of guessing. Working-tree reviews read your changes through a scratch Git index, so staged changes and files are never modified.
 
 ## How a grounded review works
 
 1. **Pin the scope.** Base and head commits are resolved and the changed files are snapshotted. Remote targets are fetched into temporary refs and never checked out, so your working tree is untouched.
 2. **Find.** A finder agent gets the diff and can call `review_changed_files`, `review_diff`, `review_read_file`, `review_search`, and `review_log`. These tools answer from the pinned revision, not from whatever is checked out. The agent has a fixed budget of model turns and tool calls; when it runs out it must report with what it has.
-3. **Check citations.** Each issue must point at an existing line of a changed text file, in or within three lines of a changed line. Issues that do not are dropped and listed under **Dropped**.
-4. **Verify.** Each remaining issue (up to 8, most severe first) goes to a separate verifier agent that re-reads the code and answers `CONFIRM`, `REJECT`, or `INSUFFICIENT` with a confidence. Only confirmations with confidence 80 or higher are reported as findings.
+3. **Check citations.** Each issue must point at an existing line of a changed text file, in or within three lines of a changed line or a deletion boundary in the head. Issues that do not are dropped and listed under **Dropped**.
+4. **Verify.** Each remaining issue (up to 8, most severe first, one per cited line before any second issue on the same line) goes to a separate verifier agent that re-reads the code and answers `CONFIRM`, `REJECT`, or `INSUFFICIENT` with a confidence. Only confirmations with confidence 80 or higher are reported as findings.
 
 Models without native tool calling use the same text tool-call fallback as normal chat.
 
@@ -47,7 +47,7 @@ Findings that cite the same line and describe the same issue are merged before v
 The report renders like a normal assistant reply, headed by the review status:
 
 - **completed**: the finder finished within budget, every changed text file was covered, and every cited issue was verified. Only a completed review says "No verified issues found".
-- **incomplete**: something limited coverage — the finder hit its budget, a file too large for the initial diff was never inspected, the finder's output could not be read, or some issues were not verified. The report lists why under **Why this review is incomplete**; treat it as partial.
+- **incomplete**: something limited coverage — the finder hit its budget, a file too large for the initial diff was never fully inspected, model output was cut off at its output limit, the finder's output could not be read, or some issues were not verified. An omitted file requires an untruncated whole-file diff or read; partial ranges and clipped tool output do not count as full coverage. Truncated verifier output cannot confirm an issue. The report lists why under **Why this review is incomplete**; treat it as partial.
 - **failed** or **cancelled**: the review stopped early; any partial results are labeled.
 
 While a review runs, a live activity view shows its agents, tool calls, and model calls. Press `d` to show details and `Esc` to cancel. The view only captures keys while the review is running.

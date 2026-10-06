@@ -27,6 +27,8 @@ export interface ReviewAgentTool {
 	parameters: JsonSchemaObject;
 	describe: (args: Record<string, unknown>) => ReviewToolDescription;
 	run: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>;
+	/** True only when this result contains an untruncated whole-file inspection. */
+	coversWholeFile?: (args: Record<string, unknown>, result: string) => boolean;
 }
 
 export interface PromptDiff {
@@ -221,6 +223,19 @@ function readRange(
 	return `${path} (${label}, lines ${start}-${end} of ${lines.length})\n${numberLines(lines, start, end)}${more}`;
 }
 
+function coversWholeRead(
+	content: string,
+	args: Record<string, unknown>,
+): boolean {
+	const lines = splitContentLines(content);
+	return (
+		(positiveInteger(args.start_line) ?? 1) === 1 &&
+		(positiveInteger(args.end_line) ?? MAX_READ_LINES) >= lines.length &&
+		lines.length <= MAX_READ_LINES &&
+		lines.every(line => line.length <= MAX_LINE_LENGTH)
+	);
+}
+
 /**
  * Create the read-only tools the review agents may call. Every answer comes
  * from the pinned snapshot or the pinned head commit's Git objects, never from
@@ -305,6 +320,10 @@ export function createReviewContextTools(
 				if (lines.length <= MAX_DIFF_LINES) return lines.join('\n');
 				return `${lines.slice(0, MAX_DIFF_LINES).join('\n')}\n[diff truncated after ${MAX_DIFF_LINES} of ${lines.length} lines; use review_read_file with start_line to read the rest of the file]`;
 			},
+			coversWholeFile: (args, result) => {
+				const file = changed.get(requirePath(args.path));
+				return !!file && !file.isBinary && result === renderFileDiff(file);
+			},
 		},
 		{
 			name: 'review_read_file',
@@ -373,6 +392,17 @@ export function createReviewContextTools(
 					if (signal?.aborted) throw error;
 					return `Error: ${path} could not be read from the reviewed ${headLabel}.`;
 				}
+			},
+			coversWholeFile: args => {
+				const file = changed.get(requirePath(args.path));
+				const content = file?.headContent ?? file?.baseContent;
+				return (
+					!!file &&
+					!file.isBinary &&
+					content !== null &&
+					content !== undefined &&
+					coversWholeRead(content, args)
+				);
 			},
 		},
 		{

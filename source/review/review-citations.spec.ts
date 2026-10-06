@@ -1,6 +1,8 @@
 import test from 'ava';
+import {ReviewActivityStore} from './review-activity';
 import {checkCitation, citedExcerpt} from './review-citations';
-import type {ReviewFileSnapshot, ReviewTargetSnapshot} from './review-snapshot';
+import {createCommitSnapshot, type ReviewFileSnapshot, type ReviewTargetSnapshot} from './review-snapshot';
+import {createReviewFixtureTools, createReviewGitFixture} from './review-test-helpers';
 
 function file(overrides: Partial<ReviewFileSnapshot>): ReviewFileSnapshot {
 	return {
@@ -62,3 +64,38 @@ test('cited excerpt marks the cited line and clamps to the file', t => {
 	t.is(lines[1], '>2: line 2');
 	t.is(lines.at(-1), ' 5: line 5');
 });
+
+for (const [position, index, anchors] of [
+	['start', 0, [1]],
+	['middle', 10, [10, 11]],
+	['end', 20, [20]],
+] as const) {
+	test(`deletion-only citations use clamped boundaries at the ${position} of a file`, async t => {
+		const fixture = createReviewGitFixture();
+		t.teardown(fixture.cleanup);
+		const head = Array.from({length: 20}, (_, i) => `line ${i + 1}`);
+		const base = [...head];
+		base.splice(index, 0, 'removed guard');
+		fixture.write('src/math.ts', `${base.join('\n')}\n`);
+		fixture.runGit(['add', '--all']);
+		fixture.runGit(['commit', '-m', 'add guard']);
+		const baseOid = fixture.runGit(['rev-parse', 'HEAD']);
+		fixture.write('src/math.ts', `${head.join('\n')}\n`);
+		fixture.runGit(['add', '--all']);
+		fixture.runGit(['commit', '-m', 'remove guard']);
+		const target = await createCommitSnapshot(
+			{baseOid, headOid: fixture.runGit(['rev-parse', 'HEAD']), scope: {kind: 'branch', description: 'deletion'}},
+			{tools: createReviewFixtureTools(fixture), activity: new ReviewActivityStore()},
+		);
+		t.deepEqual(target.files[0]!.lineMap.changedHeadLines, []);
+		t.deepEqual(target.files[0]!.lineMap.headDeletionAnchors, [...anchors]);
+		for (let line = 1; line <= 20; line++) {
+			t.is(
+				checkCitation(target, {file: 'src/math.ts', line}).ok,
+				anchors.some(anchor => Math.abs(anchor - line) <= 3),
+				`citation at line ${line}`,
+			);
+		}
+		t.false(checkCitation(target, {file: 'src/math.ts', line: 21}).ok);
+	});
+}

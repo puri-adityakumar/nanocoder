@@ -151,6 +151,29 @@ test('malformed fallback calls are retried, then fail the agent', async t => {
 	t.is(calls.length, 3);
 });
 
+test('malformed native-mode text calls get feedback and recover', async t => {
+	const {run, calls} = agentRun((_call, index) =>
+		index === 0
+			? {content: '[tool_use: review_read_file]'}
+			: index === 1
+				? {content: '<review_read_file><path>src/file.ts</path></review_read_file>'}
+				: {content: 'NO FINDINGS'},
+	);
+	const outcome = await runReviewAgent(run);
+	t.is(outcome.status, 'completed');
+	t.is(outcome.toolCalls, 1);
+	t.is(calls.length, 3);
+	t.regex(calls[1]!.messages.at(-1)!.content, /malformed tool call/);
+});
+
+test('malformed native-mode text calls fail at the retry cap', async t => {
+	const {run, calls} = agentRun(() => ({content: '[tool_use: review_read_file]'}));
+	const outcome = await runReviewAgent(run);
+	t.is(outcome.status, 'failed');
+	t.regex(outcome.error ?? '', /Malformed tool calls/);
+	t.is(calls.length, 3);
+});
+
 test('native models that regress to text calls still run review tools, but quoted markup is not a call', async t => {
 	const regressed = agentRun((_call, index) =>
 		index === 0
@@ -222,4 +245,14 @@ test('a model error fails the agent with its message', async t => {
 		run.activity.toSummary().events.find(event => event.source === 'api')?.status,
 		'failed',
 	);
+});
+
+test('output-limit truncation keeps the report but marks it partial', async t => {
+	const {run} = agentRun(() => ({
+		content: 'NO FINDINGS',
+		finishReason: 'length',
+	}));
+	const outcome = await runReviewAgent(run);
+	t.is(outcome.output, 'NO FINDINGS');
+	t.regex(outcome.incompleteReason ?? '', /finder output was cut off/);
 });

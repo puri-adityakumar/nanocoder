@@ -78,6 +78,21 @@ export async function verifyCitedFindings(
 			severityRank(left.finding.severity) -
 			severityRank(right.finding.severity),
 	);
+	// Specialists often word one bug differently, so copies survive dedupe.
+	// Spend the verification budget on every cited line before any repeats.
+	const coveredLines = new Set<string>();
+	const firstAtLine: typeof cited = [];
+	const repeats: typeof cited = [];
+	for (const entry of cited) {
+		const location = `${entry.finding.file}:${entry.finding.line}`;
+		if (coveredLines.has(location)) {
+			repeats.push(entry);
+		} else {
+			coveredLines.add(location);
+			firstAtLine.push(entry);
+		}
+	}
+	cited.splice(0, cited.length, ...firstAtLine, ...repeats);
 
 	reviewSpan.progress(
 		cited.length === 0
@@ -127,6 +142,13 @@ export async function verifyCitedFindings(
 			return 'cancelled';
 		}
 
+		if (verifier.incompleteReason) {
+			result.unverified.push({
+				finding,
+				reason: verifier.incompleteReason,
+			});
+			continue;
+		}
 		const verdict = parseVerdict(verifier.output, finding.id);
 		if (!verdict) {
 			result.unverified.push({

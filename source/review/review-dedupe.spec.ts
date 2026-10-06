@@ -20,7 +20,7 @@ function finding(
 test('keeps the first lens and renumbers the survivors', t => {
 	const {unique, duplicates} = dedupeFindings([
 		{finding: finding('Division by zero when count is 0'), lens: 'bugs'},
-		{finding: finding('division by zero'), lens: 'standards and API misuse'},
+		{finding: finding('  DIVISION BY ZERO, when count is 0!  '), lens: 'standards and API misuse'},
 		{
 			finding: finding('Unused parameter total', 2),
 			lens: 'intent and spec',
@@ -38,7 +38,7 @@ test('keeps the first lens and renumbers the survivors', t => {
 		{
 			kept: 'bugs',
 			dropped: 'standards and API misuse',
-			finding: finding('division by zero'),
+			finding: finding('  DIVISION BY ZERO, when count is 0!  '),
 		},
 	]);
 });
@@ -52,3 +52,20 @@ test('does not merge different lines or unrelated issues', t => {
 	t.is(unique.length, 3);
 	t.deepEqual(duplicates, []);
 });
+
+for (const longer of [
+	'Missing validation for idempotencyKey',
+	'Missing validation for id and auth token',
+]) {
+	for (const reverse of [false, true]) {
+		test(`preserves distinct issues: ${longer} (${reverse ? 'longer first' : 'shorter first'})`, t => {
+			const issues = ['Missing validation for id', longer];
+			if (reverse) issues.reverse();
+			const {unique, duplicates} = dedupeFindings(
+				issues.map((issue, index) => ({finding: finding(issue), lens: `lens ${index}`})),
+			);
+			t.deepEqual(unique.map(entry => entry.finding.issue), issues);
+			t.deepEqual(duplicates, []);
+		});
+	}
+}

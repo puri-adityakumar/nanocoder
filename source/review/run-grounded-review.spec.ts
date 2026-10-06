@@ -61,6 +61,45 @@ async function review(
 
 const divideFinding = findingBlock({file: 'src/file.ts', line: 3});
 
+test('a truncated finder retains complete findings without completing the review', async t => {
+	const fixture = featureFixture(t);
+	const {result} = await review(fixture, call =>
+		call.role === 'finder'
+			? {
+					content: `${divideFinding}\nFINDING\nFILE: src/file.ts\nLINE:`,
+					finishReason: 'length',
+				}
+			: {content: verdictBlock({})},
+	);
+	t.is(result.status, 'incomplete');
+	t.is(result.findings.length, 1);
+	t.regex(result.incompleteReasons.join('\n'), /finder output was cut off/);
+});
+
+test('truncated NO FINDINGS is not a clean review', async t => {
+	const fixture = featureFixture(t);
+	const {result, report} = await review(fixture, () => ({
+		content: 'NO FINDINGS',
+		finishReason: 'length',
+	}));
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /model output limit/);
+	t.false(report.includes('No verified issues found'));
+});
+
+test('a truncated verifier verdict cannot confirm a finding', async t => {
+	const fixture = featureFixture(t);
+	const {result} = await review(fixture, call =>
+		call.role === 'finder'
+			? {content: divideFinding}
+			: {content: verdictBlock({}), finishReason: 'length'},
+	);
+	t.is(result.status, 'incomplete');
+	t.is(result.findings.length, 0);
+	t.is(result.unverified.length, 1);
+	t.regex(result.unverified[0]!.reason, /output was cut off/);
+});
+
 test('a confirmed, cited finding is reported with its verification', async t => {
 	const fixture = featureFixture(t);
 	const {result, calls, report} = await review(fixture, call =>
@@ -102,6 +141,29 @@ test('a clean review requires the NO FINDINGS sentinel and runs no verifier', as
 	t.is(result.status, 'completed');
 	t.is(calls.length, 1);
 	t.true(report.includes('No verified issues found in the reviewed scope.'));
+});
+
+test('removing only a null guard retains the finding and runs the verifier', async t => {
+	const fixture = createReviewGitFixture();
+	t.teardown(fixture.cleanup);
+	fixture.write('src/file.ts', 'export function name(user) {\n\tif (!user) return null;\n\treturn user.name;\n}\n');
+	fixture.runGit(['add', '--all']);
+	fixture.runGit(['commit', '-m', 'add guarded function']);
+	fixture.runGit(['push', 'origin', 'main']);
+	fixture.runGit(['checkout', '-b', 'feature/grounded']);
+	fixture.write('src/file.ts', 'export function name(user) {\n\treturn user.name;\n}\n');
+	fixture.runGit(['add', '--all']);
+	fixture.runGit(['commit', '-m', 'remove null guard']);
+	const {result, calls} = await review(fixture, call =>
+		call.role === 'finder'
+			? {content: findingBlock({file: 'src/file.ts', line: 2, issue: 'Null dereference', evidence: 'return user.name;'})}
+			: {content: verdictBlock({reason: 'The null guard was removed and user may be null'})},
+	);
+	t.is(result.status, 'completed');
+	t.is(result.stats.verifierRuns, 1);
+	t.is(calls.filter(call => call.role === 'verifier').length, 1);
+	t.is(result.findings.length, 1);
+	t.deepEqual(result.dropped, []);
 });
 
 test('bad citations, rejections, and low-confidence confirmations are dropped', async t => {
@@ -174,7 +236,54 @@ test('files too large for the prompt must be inspected before the review is comp
 			? {toolCalls: [{name: 'review_diff', args: {path: 'src/large.ts'}}]}
 			: {content: 'NO FINDINGS'},
 	);
-	t.is(inspected.result.status, 'completed');
+	t.is(inspected.result.status, 'incomplete');
+	t.regex(inspected.result.incompleteReasons.join('\n'), /src\/large.ts was only partially inspected/);
+});
+
+test('a one-line read does not cover a file omitted from the initial prompt', async t => {
+	const large = `${Array.from({length: 1600}, (_, index) => `const v${index} = ${index};`).join('\n')}\n`;
+	const fixture = featureFixture(t, {'src/large.ts': large});
+	for (const line of [1, 1600]) {
+		const {result} = await review(fixture, (_call, index) =>
+			index === 0
+				? {toolCalls: [{name: 'review_read_file', args: {path: 'src/large.ts', start_line: line, end_line: line}}]}
+				: {content: 'NO FINDINGS'},
+		);
+		t.is(result.status, 'incomplete');
+		t.regex(result.incompleteReasons.join('\n'), /only partially inspected/);
+	}
+});
+
+test('agent-side character clipping does not cover an otherwise untruncated diff', async t => {
+	const large = `${Array.from({length: 400}, (_, index) => `const v${index} = '${'x'.repeat(200)}';`).join('\n')}\n`;
+	const fixture = featureFixture(t, {'src/large.ts': large});
+	const {result, calls} = await review(fixture, (_call, index) =>
+		index === 0
+			? {toolCalls: [{name: 'review_diff', args: {path: 'src/large.ts'}}]}
+			: {content: 'NO FINDINGS'},
+	);
+	const output = calls[1]!.messages.at(-1)!.content;
+	t.true(output.includes('[output truncated]'));
+	t.false(output.includes('[diff truncated'));
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /only partially inspected/);
+});
+
+test('a complete tool diff or whole-file read can cover an omitted file', async t => {
+	const large = `${Array.from({length: 200}, (_, index) => `const v${index} = '${'x'.repeat(25)}';`).join('\n')}\n`;
+	const fixture = featureFixture(t, {'src/large.ts': large});
+	for (const name of ['review_diff', 'review_read_file']) {
+		const {client, calls} = createScriptedReviewClient(
+			(_call, index) =>
+				index === 0
+					? {toolCalls: [{name, args: {path: 'src/large.ts'}}]}
+					: {content: 'NO FINDINGS'},
+			{contextSize: 2000},
+		);
+		const {result} = await review(fixture, () => ({}), {client});
+		t.regex(calls[0]!.messages[1]!.content, /NOT included in the diff below[\s\S]*- src\/large.ts/);
+		t.is(result.status, 'completed');
+	}
 });
 
 test('findings the verifier could not judge, or beyond the verification cap, are unverified', async t => {

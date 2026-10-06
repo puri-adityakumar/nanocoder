@@ -74,7 +74,7 @@ test('deep review runs one finder per lens and verifies a deduped finding once',
 				content: findingBlock({
 					file: 'src/file.ts',
 					line: 3,
-					issue: 'division by zero',
+					issue: '  DIVISION BY ZERO, when count is 0!  ',
 				}),
 			};
 		}
@@ -177,4 +177,122 @@ test('cancelling during a later finder keeps earlier findings unverified', async
 	t.is(result.unverified.length, 1);
 	t.is(result.unverified[0]?.reason, 'not verified: review cancelled');
 	t.is(result.findings.length, 0);
+});
+
+test('a specialist cut off at the output limit makes the deep review incomplete', async t => {
+	const fixture = featureFixture(t);
+	let index = 0;
+	const {result} = await review(fixture, call => {
+		if (call.role !== 'finder') return {content: verdictBlock({})};
+		index++;
+		return index === 1
+			? {content: 'NO FINDINGS', finishReason: 'length'}
+			: {content: 'NO FINDINGS'};
+	});
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /output was cut off at the model output limit/);
+});
+
+test('a partial read of an omitted file leaves the deep review incomplete', async t => {
+	const fixture = featureFixture(t);
+	fixture.write(
+		'src/large.ts',
+		`${Array.from({length: 1600}, (_, index) => `export const v${index} = ${index};`).join('\n')}\n`,
+	);
+	fixture.runGit(['add', '--all']);
+	fixture.runGit(['commit', '-m', 'add large file']);
+	const {result} = await review(fixture, call => {
+		if (call.role !== 'finder') return {content: verdictBlock({})};
+		const inspected = call.messages.some(message => message.role === 'tool');
+		return inspected
+			? {content: 'NO FINDINGS'}
+			: {
+					toolCalls: [
+						{
+							name: 'review_read_file',
+							args: {path: 'src/large.ts', start_line: 1, end_line: 1},
+						},
+					],
+				};
+	});
+	t.is(result.status, 'incomplete');
+	t.regex(result.incompleteReasons.join('\n'), /src\/large.ts was only partially inspected/);
+	t.false(result.incompleteReasons.join('\n').includes('never inspected'));
+});
+
+test('deep review verifies distinct identifiers at the same location separately', async t => {
+	const fixture = featureFixture(t);
+	fixture.write('src/file.ts', [
+		'export const value = 1;',
+		'export function accept(id: string, idempotencyKey: string) {',
+		'\treturn {id, idempotencyKey};',
+		'}',
+		'',
+	].join('\n'));
+	fixture.runGit(['add', '--', 'src/file.ts']);
+	fixture.runGit(['commit', '-m', 'add identifier handling']);
+	const issues = ['Missing validation for id', 'Missing validation for idempotencyKey'];
+	let finderIndex = 0;
+	let verifierIndex = 0;
+	const {result, calls} = await review(fixture, call => {
+		if (call.role === 'verifier') {
+			return {content: verdictBlock({id: `F${++verifierIndex}`})};
+		}
+		const issue = issues[finderIndex++];
+		return {
+			content: issue ? findingBlock({
+				file: 'src/file.ts',
+				line: 3,
+				issue,
+				evidence: 'return {id, idempotencyKey};',
+			}) : 'NO FINDINGS',
+		};
+	});
+
+	t.is(calls.filter(call => call.role === 'verifier').length, 2);
+	t.is(result.status, 'completed');
+	t.deepEqual(result.findings.map(finding => finding.issue), issues);
+});
+
+test('deep review verifies every cited line before repeats at the same line', async t => {
+	const fixture = featureFixture(t);
+	let finderIndex = 0;
+	const {result, calls} = await review(
+		fixture,
+		call => {
+			if (call.role === 'verifier') {
+				const id = call.messages[1]?.content.match(/ID: (F\d+)/)?.[1];
+				return {content: verdictBlock({id: id ?? 'F1'})};
+			}
+			finderIndex++;
+			if (finderIndex === 1) {
+				return {
+					content: [
+						findingBlock({file: 'src/file.ts', line: 3, issue: 'Division by zero when count is 0'}),
+						findingBlock({file: 'src/file.ts', line: 3, issue: 'count is never validated before dividing'}),
+					].join('\n\n'),
+				};
+			}
+			if (finderIndex === 2) {
+				return {
+					content: findingBlock({
+						file: 'src/file.ts',
+						line: 2,
+						issue: 'average accepts a negative count',
+						evidence: 'export function average(total: number, count: number) {',
+					}),
+				};
+			}
+			return {content: 'NO FINDINGS'};
+		},
+		{budgets: {...DEFAULT_GROUNDED_REVIEW_BUDGETS, maxVerifications: 2}},
+	);
+
+	const verified = calls
+		.filter(call => call.role === 'verifier')
+		.map(call => call.messages[1]?.content.match(/LINE: (\d+)/)?.[1]);
+	t.deepEqual(verified, ['3', '2']);
+	t.is(result.unverified.length, 1);
+	t.is(result.unverified[0]?.finding.line, 3);
+	t.regex(result.unverified[0]?.reason ?? '', /only 2 findings are verified/);
 });

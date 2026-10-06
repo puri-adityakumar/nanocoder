@@ -48,7 +48,11 @@ export function checkCitation(
 			reason: `line ${finding.line} is past the end of ${finding.file} (${lineCount} lines)`,
 		};
 	}
-	const nearChange = file.lineMap.changedHeadLines.some(
+	const anchors = [
+		...file.lineMap.changedHeadLines,
+		...(file.lineMap.headDeletionAnchors ?? []),
+	];
+	const nearChange = anchors.some(
 		line => Math.abs(line - finding.line) <= CITATION_CHANGE_WINDOW,
 	);
 	if (!nearChange) {

@@ -1,5 +1,5 @@
-import {randomUUID} from 'node:crypto';
-import {existsSync, symlinkSync, writeFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {existsSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import test from 'ava';
 import {ReviewActivityStore} from './review-activity';
@@ -10,7 +10,6 @@ import {
 } from './review-resolver';
 import {
 	assertSafeReviewPath,
-	cleanupStaleReviewRefs,
 	createWorkingTreeSnapshot,
 	withTemporaryReviewRefs,
 } from './review-snapshot';
@@ -129,6 +128,48 @@ test('resolves recent commits by SHA and includes changed-line mappings', async 
 	t.deepEqual(result.snapshot.files[0]?.lineMap.changedHeadLines, [1]);
 });
 
+for (const count of [1, 2]) {
+	test(`recent ${count} commits follow first-parent merge history`, async t => {
+		const fixture = createReviewGitFixture();
+		t.teardown(fixture.cleanup);
+		const commitAt = (date: string, message: string, amend = false) =>
+			execFileSync('git', ['-C', fixture.root, 'commit', '-m', message, ...(amend ? ['--amend'] : [])], {
+				stdio: 'ignore',
+				env: {
+					...process.env,
+					GIT_CONFIG_GLOBAL: '/dev/null',
+					GIT_CONFIG_NOSYSTEM: '1',
+					GIT_TERMINAL_PROMPT: '0',
+					GIT_AUTHOR_DATE: date,
+					GIT_COMMITTER_DATE: date,
+				},
+			});
+		commitAt('2019-01-01T00:00:00Z', 'initial commit', true);
+		fixture.runGit(['branch', 'side']);
+		fixture.write('src/file.ts', 'mainline change\n');
+		fixture.runGit(['add', '--', 'src/file.ts']);
+		commitAt('2020-01-01T00:00:00Z', 'mainline change');
+		fixture.runGit(['checkout', 'side']);
+		fixture.write('src/side.ts', 'merged side change\n');
+		fixture.runGit(['add', '--', 'src/side.ts']);
+		commitAt('2020-01-02T00:00:00Z', 'newer side change');
+		fixture.runGit(['checkout', 'main']);
+		fixture.runGit(['merge', '--no-ff', 'side', '-m', 'merge side']);
+		const expectedBase = fixture.runGit(['rev-parse', `HEAD~${count}`]);
+		const result = await resolveReviewScope(`/review last ${count} commits`, {
+			tools: createReviewFixtureTools(fixture),
+		});
+
+		t.is(result.status, 'ready');
+		if (result.status !== 'ready') return;
+		t.is(result.snapshot.baseOid, expectedBase);
+		t.is(
+			result.snapshot.files.find(file => file.path === 'src/side.ts')?.headContent,
+			'merged side change\n',
+		);
+	});
+}
+
 test('default scope asks when dirty worktree changes and upstream-ahead commits coexist', async t => {
 	const fixture = createReviewGitFixture();
 	t.teardown(fixture.cleanup);
@@ -193,8 +234,46 @@ test('default scope snapshots dirty-only worktree content and reports a digest',
 	t.is(untracked?.status, 'added');
 	t.is(untracked?.headContent, 'export const fresh = true;\n');
 	t.deepEqual(untracked?.lineMap.changedHeadLines, [1]);
-	t.regex(result.snapshot.headDigest ?? '', /^[0-9a-f]{64}$/);
+	t.regex(result.snapshot.headDigest ?? '', /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 	t.is(result.snapshot.baseOid, result.snapshot.headOid);
+});
+
+test('worktree snapshots include repository-relative paths when launched from a subdirectory', async t => {
+	const fixture = createReviewGitFixture();
+	t.teardown(fixture.cleanup);
+	fixture.write('tracked.ts', 'root before\n');
+	fixture.runGit(['add', '--', 'tracked.ts']);
+	fixture.runGit(['commit', '-m', 'track root file']);
+	fixture.write('tracked.ts', 'root after\n');
+	fixture.write('src/file.ts', 'source after\n');
+	fixture.write('fresh.ts', 'root untracked\n');
+	fixture.write('src/fresh.ts', 'source untracked\n');
+	const options = {
+		cwd: join(fixture.root, 'src'),
+		env: {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null',
+			GIT_CONFIG_NOSYSTEM: '1',
+			GIT_TERMINAL_PROMPT: '0',
+		},
+	};
+	const tools = createReviewFixtureTools(fixture);
+	tools.execGit = async (args, _signal, env) =>
+		execFileSync('git', args, {...options, env: {...options.env, ...env}, encoding: 'utf8'}).trimEnd();
+	tools.execGitBuffer = async args => execFileSync('git', args, options);
+	const result = await resolveReviewScope('/review working tree', {tools});
+
+	t.is(result.status, 'ready');
+	if (result.status !== 'ready') return;
+	t.deepEqual(
+		result.snapshot.files.map(file => [file.path, file.headContent]).sort(),
+		[
+			['fresh.ts', 'root untracked\n'],
+			['src/file.ts', 'source after\n'],
+			['src/fresh.ts', 'source untracked\n'],
+			['tracked.ts', 'root after\n'],
+		],
+	);
 });
 
 test('resolver returns a failed result when an activity store is reused', async t => {
@@ -362,6 +441,12 @@ test('request text is never used as shell input and unsafe changed paths are rej
 	t.throws(() => assertSafeReviewPath('C:\\outside.txt'));
 });
 
+let idCounter = 0;
+function randomId(): string {
+	idCounter += 1;
+	return `review-${idCounter}`;
+}
+
 test('worktree snapshots read symlink text, not a file outside the repository', async t => {
 	const fixture = createReviewGitFixture();
 	t.teardown(fixture.cleanup);
@@ -379,65 +464,94 @@ test('worktree snapshots read symlink text, not a file outside the repository', 
 	t.false(file?.headContent?.includes('do not read this secret'));
 });
 
-test('temporary namespaced refs are unique and cleaned after success and failure', async t => {
+test('worktree snapshots leave the real index and files untouched', async t => {
 	const fixture = createReviewGitFixture();
 	t.teardown(fixture.cleanup);
-	const activity = new ReviewActivityStore({reviewId: 'temp-ref-lifecycle'});
+	fixture.write('src/file.ts', 'export const value = 2;\n');
+	fixture.runGit(['add', '--', 'src/file.ts']);
+	fixture.write('src/file.ts', 'export const value = 3;\n');
+	fixture.write('src/new.ts', 'export const added = true;\n');
+	const indexPath = fixture.runGit(['rev-parse', '--path-format=absolute', '--git-path', 'index']);
+	// `git status` refreshes the index stat cache, so read the index after it.
+	const statusBefore = fixture.runGit(['status', '--porcelain=v1', '-z']);
+	const indexBefore = readFileSync(indexPath);
+	const snapshot = await createWorkingTreeSnapshot(
+		{scope: {kind: 'working-tree', description: 'index safety'}},
+		{
+			tools: createReviewFixtureTools(fixture),
+			activity: new ReviewActivityStore({reviewId: 'index-safety'}),
+		},
+	);
+
+	t.deepEqual(
+		snapshot.files.map(file => [file.path, file.headContent]).sort(),
+		[
+			['src/file.ts', 'export const value = 3;\n'],
+			['src/new.ts', 'export const added = true;\n'],
+		],
+	);
+	t.true(readFileSync(indexPath).equals(indexBefore));
+	t.is(fixture.runGit(['status', '--porcelain=v1', '-z']), statusBefore);
+	t.is(fixture.runGit(['diff', '--cached', '--name-only']), 'src/file.ts');
+});
+
+test('remote revisions use one fixed ref per source and are removed after success and failure', async t => {
+	const fixture = createReviewGitFixture();
+	t.teardown(fixture.cleanup);
+	const activity = new ReviewActivityStore({reviewId: 'fixed-ref-lifecycle'});
 	const tools = createReviewFixtureTools(fixture);
+	const execGit = tools.execGit;
+	const destinations: string[] = [];
+	tools.execGit = async (args, signal, env) => {
+		if (args[0] === 'fetch') destinations.push(args.at(-1) ?? '');
+		return execGit(args, signal, env);
+	};
 	const mainOid = fixture.runGit(['rev-parse', 'main']).trim();
-	const namespaces: string[] = [];
 
 	await withTemporaryReviewRefs({tools, activity}, async refs => {
-		namespaces.push(refs.namespace);
-		const pinned = await refs.fetch(
-			'origin',
-			'refs/heads/main',
-			'head',
-			mainOid,
-		);
-		t.is(pinned, mainOid);
+		t.is(await refs.fetch('origin', 'refs/heads/main', mainOid), mainOid);
 	});
 	await t.throwsAsync(
 		withTemporaryReviewRefs({tools, activity}, async refs => {
-			namespaces.push(refs.namespace);
-			await refs.fetch('origin', 'refs/heads/main', 'head', mainOid);
+			await refs.fetch('origin', 'refs/heads/main', mainOid);
 			throw new Error('simulated snapshot failure');
 		}),
 		{message: 'simulated snapshot failure'},
 	);
 
-	t.not(namespaces[0], namespaces[1]);
+	t.is(destinations.length, 2);
+	t.is(destinations[0], destinations[1]);
+	t.regex(destinations[0] ?? '', /^\+refs\/heads\/main:refs\/nanocoder\/review\/[0-9a-f]{12}\/heads\/main$/);
 	t.deepEqual(listReviewRefs(fixture), []);
 });
 
-test('temporary-ref cleanup attempts every ref and reports a failed deletion', async t => {
+test('a failed ref removal does not fail the review and the next run reuses the ref', async t => {
 	const fixture = createReviewGitFixture();
 	t.teardown(fixture.cleanup);
 	const tools = createReviewFixtureTools(fixture);
 	const execGit = tools.execGit;
-	let failNextDelete = true;
-	tools.execGit = async (args, signal) => {
-		if (args[0] === 'update-ref' && args[1] === '-d' && failNextDelete) {
-			failNextDelete = false;
+	let failDeletes = true;
+	tools.execGit = async (args, signal, env) => {
+		if (args[0] === 'update-ref' && args[1] === '-d' && failDeletes) {
 			throw new Error('simulated ref deletion failure');
 		}
-		return execGit(args, signal);
+		return execGit(args, signal, env);
 	};
 	const mainOid = fixture.runGit(['rev-parse', 'main']).trim();
-
-	await t.throwsAsync(
+	const run = () =>
 		withTemporaryReviewRefs(
-			{tools, activity: new ReviewActivityStore({reviewId: 'cleanup-failure'})},
-			async refs => {
-				await refs.fetch('origin', 'refs/heads/main', 'head', mainOid);
-				await refs.fetch('origin', 'refs/heads/main', 'base', mainOid);
-				throw new Error('simulated snapshot failure');
-			},
-		),
-		{message: /temporary refs could not be removed/},
-	);
+			{tools, activity: new ReviewActivityStore({reviewId: randomId()})},
+			async refs => refs.fetch('origin', 'refs/heads/main', mainOid),
+		);
 
-	t.is(listReviewRefs(fixture).length, 1);
+	t.is(await run(), mainOid);
+	const leftBehind = listReviewRefs(fixture);
+	t.is(leftBehind.length, 1);
+	t.is(await run(), mainOid);
+	t.deepEqual(listReviewRefs(fixture), leftBehind);
+	failDeletes = false;
+	await run();
+	t.deepEqual(listReviewRefs(fixture), []);
 });
 
 test('aborted remote fetch cleans its temporary ref and returns cancelled status', async t => {
@@ -466,61 +580,6 @@ test('aborted remote fetch cleans its temporary ref and returns cancelled status
 
 	t.is(result.status, 'cancelled');
 	t.deepEqual(listReviewRefs(fixture), []);
-});
-
-test('cancelled resolution reports ref-cleanup failures instead of claiming success', async t => {
-	const fixture = createReviewGitFixture();
-	t.teardown(fixture.cleanup);
-	fixture.runGit(['checkout', '-b', 'remote/cleanup-cancel']);
-	commitFile(fixture, 'export const value = 7;\n', 'cleanup cancellation');
-	fixture.runGit(['push', '--set-upstream', 'origin', 'remote/cleanup-cancel']);
-	fixture.runGit(['checkout', 'main']);
-	fixture.runGit(['branch', '-D', 'remote/cleanup-cancel']);
-	fixture.runGit(['update-ref', '-d', 'refs/remotes/origin/remote/cleanup-cancel']);
-	const controller = new AbortController();
-	const tools = createReviewFixtureTools(fixture);
-	const execGit = tools.execGit;
-	tools.execGit = async (args, signal) => {
-		if (args[0] === 'fetch') {
-			const result = await execGit(args, signal);
-			controller.abort();
-			return result;
-		}
-		if (args[0] === 'update-ref' && args[1] === '-d') {
-			throw new Error('simulated ref deletion failure');
-		}
-		return execGit(args, signal);
-	};
-
-	const result = await resolveReviewScope(
-		'/review branch remote/cleanup-cancel',
-		{tools, signal: controller.signal},
-	);
-
-	t.is(result.status, 'failed');
-	if (result.status !== 'failed') return;
-	t.regex(result.message, /temporary refs could not be removed/);
-	t.is(listReviewRefs(fixture).length, 1);
-});
-
-test('stale interrupted-run refs are removed without deleting current refs', async t => {
-	const fixture = createReviewGitFixture();
-	t.teardown(fixture.cleanup);
-	const oid = fixture.runGit(['rev-parse', 'HEAD']).trim();
-	const now = Date.now();
-	const staleNamespace = `refs/nanocoder/review/${String(now - 8 * 24 * 60 * 60 * 1000).padStart(13, '0')}-${randomUUID()}`;
-	const currentNamespace = `refs/nanocoder/review/${String(now).padStart(13, '0')}-${randomUUID()}`;
-	const staleRef = `${staleNamespace}/head`;
-	const currentRef = `${currentNamespace}/head`;
-	fixture.runGit(['update-ref', staleRef, oid]);
-	fixture.runGit(['update-ref', currentRef, oid]);
-	const deleted = await cleanupStaleReviewRefs(
-		createReviewFixtureTools(fixture),
-		() => now,
-	);
-
-	t.deepEqual(deleted, [staleRef]);
-	t.deepEqual(listReviewRefs(fixture), [currentRef]);
 });
 
 test('keepActivityOpen leaves the trace running for the caller to finish', async t => {

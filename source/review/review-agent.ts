@@ -44,10 +44,14 @@ export interface ReviewAgentOutcome {
 	status: ReviewAgentStatus;
 	output: string;
 	error?: string;
+	/** A model output limit made this run partial, even if the text parses. */
+	incompleteReason?: string;
 	turns: number;
 	toolCalls: number;
 	/** Paths passed to tools that read file content or diffs. */
 	inspectedPaths: Set<string>;
+	/** Paths whose entire diff or file content reached the model without clipping. */
+	fullyInspectedPaths: Set<string>;
 }
 
 const MAX_TOOL_RESULT_CHARS = 12_000;
@@ -119,6 +123,7 @@ export async function runReviewAgent(
 		{role: 'user', content: run.userPrompt},
 	];
 	const inspectedPaths = new Set<string>();
+	const fullyInspectedPaths = new Set<string>();
 	const span = activity.begin({
 		source: 'agent',
 		name: run.name,
@@ -128,6 +133,7 @@ export async function runReviewAgent(
 	let turns = 0;
 	let toolCalls = 0;
 	let malformedRetries = 0;
+	let incompleteReason: string | undefined;
 
 	const callModel = async (
 		purpose: string,
@@ -154,6 +160,9 @@ export async function runReviewAgent(
 				signal,
 			);
 			if (signal?.aborted) throw new ReviewCancelledError();
+			if (response.finishReason === 'length') {
+				incompleteReason = `${run.name} output was cut off at the model output limit`;
+			}
 			const message = response.choices[0]?.message;
 			const rawContent = stripThinkTags(message?.content ?? '').trim();
 			const usage = response.usage?.totalTokens;
@@ -168,6 +177,14 @@ export async function runReviewAgent(
 				return {content: rawContent, calls: native, asText: false};
 			}
 			const parsed = parseToolCalls(rawContent);
+			if (!parsed.success) {
+				return {
+					content: rawContent,
+					calls: [],
+					asText: true,
+					malformed: parsed.error,
+				};
+			}
 			if (!toolMode.disabled) {
 				// Native-tool models sometimes regress to writing calls as text.
 				// Only accept that when every call names a review tool, so code
@@ -183,14 +200,6 @@ export async function runReviewAgent(
 							asText: true,
 						}
 					: {content: rawContent, calls: [], asText: false};
-			}
-			if (!parsed.success) {
-				return {
-					content: rawContent,
-					calls: [],
-					asText: true,
-					malformed: parsed.error,
-				};
 			}
 			return {
 				content: parsed.cleanedContent.trim(),
@@ -222,9 +231,11 @@ export async function runReviewAgent(
 			status,
 			output,
 			...(error ? {error} : {}),
+			...(incompleteReason ? {incompleteReason} : {}),
 			turns,
 			toolCalls,
 			inspectedPaths,
+			fullyInspectedPaths,
 		};
 	};
 
@@ -345,6 +356,12 @@ export async function runReviewAgent(
 				: null;
 			if (inspected && !result.startsWith('Error:')) {
 				inspectedPaths.add(inspected);
+				if (
+					result.length <= MAX_TOOL_RESULT_CHARS &&
+					entry.coversWholeFile?.(args, result)
+				) {
+					fullyInspectedPaths.add(inspected);
+				}
 			}
 			if (result.startsWith('Error:')) toolSpan.fail(result.slice(7).trim());
 			else toolSpan.complete(description.summary);

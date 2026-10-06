@@ -126,6 +126,7 @@ export async function runDeepReview(
 
 	const sourced: SourcedFinding[] = [];
 	const inspected = new Set<string>();
+	const fullyInspected = new Set<string>();
 	let failedFinders = 0;
 
 	for (const lens of FINDER_LENSES) {
@@ -163,6 +164,7 @@ export async function runDeepReview(
 		});
 		account(finder);
 		for (const path of finder.inspectedPaths) inspected.add(path);
+		for (const path of finder.fullyInspectedPaths) fullyInspected.add(path);
 
 		if (finder.status === 'cancelled') {
 			reviewSpan.cancel(`Cancelled during the ${lens.label} finder`);
@@ -186,6 +188,9 @@ export async function runDeepReview(
 			result.incompleteReasons.push(
 				`The ${lens.label} finder reached its budget (${budgets.finder.maxToolCalls} tool calls, ${budgets.finder.maxTurns} model turns) before finishing; issues may be missing.`,
 			);
+		}
+		if (finder.incompleteReason) {
+			result.incompleteReasons.push(finder.incompleteReason);
 		}
 
 		const parsed = parseFindings(finder.output);
@@ -230,6 +235,13 @@ export async function runDeepReview(
 		result.incompleteReasons.push(
 			`${uninspected.length} changed file${uninspected.length === 1 ? ' was' : 's were'} too large for the initial diff and never inspected: ${listPaths(uninspected)}.`,
 		);
+	}
+	for (const path of promptDiff.omittedPaths) {
+		if (inspected.has(path) && !fullyInspected.has(path)) {
+			result.incompleteReasons.push(
+				`${path} was only partially inspected (a limited range or output truncated).`,
+			);
+		}
 	}
 
 	const {unique, duplicates} = dedupeFindings(sourced);

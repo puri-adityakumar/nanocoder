@@ -127,6 +127,13 @@ export async function verifyCitedFindings(
 			return 'cancelled';
 		}
 
+		if (verifier.incompleteReason) {
+			result.unverified.push({
+				finding,
+				reason: verifier.incompleteReason,
+			});
+			continue;
+		}
 		const verdict = parseVerdict(verifier.output, finding.id);
 		if (!verdict) {
 			result.unverified.push({

@@ -181,7 +181,7 @@ test('replays a saved review with its activity summary line', t => {
 
 	const output = renderHistory([{role: 'user', content: '/review'}, saved]);
 
-	t.regex(output, /Grounded review · completed · 1 agent · 1 tool call · 0 API calls/);
+	t.regex(output, /Grounded review · completed · 1 agent · 1 tool call · 0 model calls/);
 	t.regex(output, /No verified issues found in the reviewed scope/);
 	t.notRegex(output, /D details/);
 });

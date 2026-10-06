@@ -17,6 +17,11 @@ import {markRunFailed} from '@/utils/run-outcome';
 
 /** `/review` sub-forms that stay on the one-shot command module. */
 const COMMAND_MODULE_FORMS = new Set(['quick', 'activity']);
+// Options objects change between submissions; the React live-slot setter is
+// stable for the lifetime of one app and does not retain an unmounted app.
+const runningReviews = new WeakSet<
+	MessageSubmissionOptions['setLiveComponent']
+>();
 
 /**
  * Handles the default grounded `/review`. It needs the live slot (activity
@@ -50,6 +55,16 @@ export async function handleGroundedReviewCommand(
 	} = options;
 
 	onAddToChatQueue(infoMsg(`$ ${trimmed}`, 'command-invocation'));
+	if (runningReviews.has(setLiveComponent)) {
+		onAddToChatQueue(
+			infoMsg(
+				'A review is already running. Press Esc to cancel it first.',
+				'review-already-running',
+			),
+		);
+		onCommandComplete?.();
+		return true;
+	}
 	if (!client) {
 		onAddToChatQueue(errorMsg('No active LLM client available.', 'review'));
 		onCommandComplete?.();
@@ -59,19 +74,19 @@ export async function handleGroundedReviewCommand(
 	const tier = deep ? 'Deep' : 'Grounded';
 	const activity = new ReviewActivityStore();
 	const controller = new AbortController();
-	setIsToolExecuting(true);
-	setLiveComponentCapturesInput(true);
-	setLiveComponent(
-		React.createElement(ReviewActivity, {
-			key: generateKey('review-activity-live'),
-			store: activity,
-			title: `${tier} review`,
-			interactive: true,
-			onCancel: () => controller.abort(),
-		}),
-	);
-
+	runningReviews.add(setLiveComponent);
 	try {
+		setIsToolExecuting(true);
+		setLiveComponentCapturesInput(true);
+		setLiveComponent(
+			React.createElement(ReviewActivity, {
+				key: generateKey('review-activity-live'),
+				store: activity,
+				title: `${tier} review`,
+				interactive: true,
+				onCancel: () => controller.abort(),
+			}),
+		);
 		const runReview = deep ? runDeepReview : runGroundedReview;
 		const result = await runReview({
 			request: reviewRequest,
@@ -106,15 +121,17 @@ export async function handleGroundedReviewCommand(
 				showUsageFooter: false,
 			}),
 		);
-		options.setMessages([
-			...options.messages,
-			createReviewMessage({
-				report,
-				tier,
-				status: result.status,
-				activity: result.activity,
-			}),
-		]);
+		const reviewMessage = createReviewMessage({
+			report,
+			tier,
+			status: result.status,
+			activity: result.activity,
+		});
+		if (options.appendMessages) {
+			options.appendMessages([reviewMessage]);
+		} else {
+			options.setMessages([...options.messages, reviewMessage]);
+		}
 	} catch (error) {
 		markRunFailed(formatError(error));
 		setLiveComponent(null);
@@ -122,6 +139,7 @@ export async function handleGroundedReviewCommand(
 			errorMsg(`Review failed: ${formatError(error)}`, 'review-error'),
 		);
 	} finally {
+		runningReviews.delete(setLiveComponent);
 		setLiveComponentCapturesInput(false);
 		setIsToolExecuting(false);
 		setTimeout(() => onCommandComplete?.(), DELAY_COMMAND_COMPLETE_MS);

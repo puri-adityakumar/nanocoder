@@ -241,7 +241,7 @@ export function parseGitHubRepository(value: string): string | null {
 		const url = new URL(remote);
 		if (
 			!['https:', 'ssh:', 'git:'].includes(url.protocol) ||
-			url.hostname.toLowerCase() !== 'github.com' ||
+			!['github.com', 'www.github.com'].includes(url.hostname.toLowerCase()) ||
 			url.port
 		) {
 			return null;

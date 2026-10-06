@@ -17,6 +17,7 @@ export interface ScriptedReviewCall {
 export interface ScriptedReviewReply {
 	content?: string;
 	toolCalls?: Array<{name: string; args: Record<string, unknown>}>;
+	finishReason?: LLMChatResponse['finishReason'];
 }
 
 export type ReviewScript = (
@@ -56,6 +57,7 @@ export function createScriptedReviewClient(
 			calls.push(call);
 			const reply = await script(call, calls.length - 1);
 			const response: LLMChatResponse = {
+				...(reply.finishReason ? {finishReason: reply.finishReason} : {}),
 				choices: [
 					{
 						message: {

@@ -215,7 +215,7 @@ export function parseVerdict(
 	const verdict = (REVIEW_VERDICTS as readonly string[]).find(
 		candidate => verdictRaw?.startsWith(candidate) ?? false,
 	) as ReviewVerdict | undefined;
-	const confidenceMatch = confidenceRaw?.match(/^(\d{1,3})/);
+	const confidenceMatch = confidenceRaw?.match(/^(\d+)/);
 	const confidence = confidenceMatch?.[1] ? Number(confidenceMatch[1]) : null;
 	if (
 		(id !== null && id.toUpperCase() !== expectedId.toUpperCase()) ||

@@ -1,4 +1,3 @@
-import {lstat, readFile, readlink, realpath} from 'node:fs/promises';
 import {execGh, execGit, execGitBuffer} from '@/tools/git/utils';
 import type {
 	ReviewActivitySource,
@@ -6,13 +5,13 @@ import type {
 } from './review-activity';
 
 export interface ReviewFoundationTools {
-	execGit: (args: string[], signal?: AbortSignal) => Promise<string>;
+	execGit: (
+		args: string[],
+		signal?: AbortSignal,
+		env?: Record<string, string>,
+	) => Promise<string>;
 	execGitBuffer: (args: string[], signal?: AbortSignal) => Promise<Buffer>;
 	execGh: (args: string[], signal?: AbortSignal) => Promise<string>;
-	readFile: typeof readFile;
-	lstat: typeof lstat;
-	realpath: typeof realpath;
-	readlink: typeof readlink;
 	githubRepositoryUrl?: (repository: string) => string;
 }
 
@@ -20,10 +19,6 @@ export const defaultReviewFoundationTools: ReviewFoundationTools = {
 	execGit,
 	execGitBuffer,
 	execGh,
-	readFile,
-	lstat,
-	realpath,
-	readlink,
 	githubRepositoryUrl: repository => `https://github.com/${repository}.git`,
 };
 

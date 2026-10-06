@@ -43,6 +43,23 @@ function countBySource(
 	return events.filter(event => event.source === source).length;
 }
 
+// Scope resolution also records its Git and gh commands as tool and API
+// events. Count only calls made by an agent so the header matches the report.
+function countAgentCalls(
+	events: readonly ReviewActivityEvent[],
+	source: ReviewActivityEvent['source'],
+): number {
+	const agentIds = new Set(
+		events.filter(event => event.source === 'agent').map(event => event.id),
+	);
+	return events.filter(
+		event =>
+			event.source === source &&
+			event.parentId !== undefined &&
+			agentIds.has(event.parentId),
+	).length;
+}
+
 export function ReviewActivity({
 	store,
 	summary: staticSummary,
@@ -94,7 +111,10 @@ export function ReviewActivity({
 	const summary = store ? store.toSummary() : staticSummary;
 	const expandedEvents = summary.events.slice(-maxExpandedEvents);
 	const hiddenByLimit = summary.events.length - expandedEvents.length;
-	const events = expanded ? expandedEvents : summary.events.slice(-recentCount);
+	// slice(-0) returns the whole array, so 0 needs its own branch.
+	const recentEvents =
+		recentCount > 0 ? summary.events.slice(-recentCount) : [];
+	const events = expanded ? expandedEvents : recentEvents;
 	const running = summary.status === 'running';
 	const statusColor =
 		summary.status === 'completed'
@@ -105,8 +125,8 @@ export function ReviewActivity({
 					? colors.warning
 					: colors.primary;
 	const agents = countBySource(summary.events, 'agent');
-	const toolCalls = countBySource(summary.events, 'tool');
-	const apiCalls = countBySource(summary.events, 'api');
+	const toolCalls = countAgentCalls(summary.events, 'tool');
+	const modelCalls = countAgentCalls(summary.events, 'api');
 	const cancelling = running && cancelRequestedView;
 
 	return (
@@ -119,8 +139,8 @@ export function ReviewActivity({
 				<Text color={colors.secondary}>
 					{' '}
 					· {agents} agent{agents === 1 ? '' : 's'} · {toolCalls} tool call
-					{toolCalls === 1 ? '' : 's'} · {apiCalls} API call
-					{apiCalls === 1 ? '' : 's'}
+					{toolCalls === 1 ? '' : 's'} · {modelCalls} model call
+					{modelCalls === 1 ? '' : 's'}
 				</Text>
 				{summary.droppedEventCount + (expanded ? hiddenByLimit : 0) > 0 && (
 					<Text color={colors.secondary}>

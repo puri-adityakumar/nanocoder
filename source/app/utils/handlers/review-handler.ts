@@ -7,6 +7,7 @@ import {renderGroundedReviewReport} from '@/review/review-report';
 import {createReviewMessage} from '@/review/review-session';
 import {resolveReviewToolMode} from '@/review/review-tool-mode';
 import type {ReviewFoundationTools} from '@/review/review-tools';
+import {runDeepReview} from '@/review/run-deep-review';
 import {runGroundedReview} from '@/review/run-grounded-review';
 import {generateKey} from '@/session/key-generator';
 import type {MessageSubmissionOptions} from '@/types/index';
@@ -39,6 +40,10 @@ export async function handleGroundedReviewCommand(
 	const request = (match[1] ?? '').trim();
 	const firstWord = request.split(/\s+/)[0]?.toLowerCase() ?? '';
 	if (COMMAND_MODULE_FORMS.has(firstWord)) return false;
+	const deep = firstWord === 'deep';
+	const reviewRequest = deep
+		? request.split(/\s+/).slice(1).join(' ').trim()
+		: request;
 
 	const {
 		onAddToChatQueue,
@@ -66,7 +71,7 @@ export async function handleGroundedReviewCommand(
 		return true;
 	}
 
-	const tier = 'Grounded';
+	const tier = deep ? 'Deep' : 'Grounded';
 	const activity = new ReviewActivityStore();
 	const controller = new AbortController();
 	runningReviews.add(setLiveComponent);
@@ -82,8 +87,9 @@ export async function handleGroundedReviewCommand(
 				onCancel: () => controller.abort(),
 			}),
 		);
-		const result = await runGroundedReview({
-			request,
+		const runReview = deep ? runDeepReview : runGroundedReview;
+		const result = await runReview({
+			request: reviewRequest,
 			client,
 			toolMode: resolveReviewToolMode(
 				options.provider,

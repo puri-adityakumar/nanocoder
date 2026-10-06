@@ -150,7 +150,7 @@ test.serial('the TUI shows live activity, toggles details, then renders and save
 
 	const live = rendered.lastFrame() ?? '';
 	t.true(live.includes('$ /review branch feature/tui'));
-	t.regex(live, /Grounded review · running · 1 agent · \d+ tool calls · 2 API calls/);
+	t.true(live.includes('Grounded review · running · 1 agent · 1 tool call · 2 model calls'));
 	t.true(live.includes('D details · Esc cancel'));
 	t.false(live.includes('args: src/file.ts'));
 	t.deepEqual(state.capture, [true]);
@@ -165,7 +165,8 @@ test.serial('the TUI shows live activity, toggles details, then renders and save
 	await tick();
 
 	const final = rendered.lastFrame() ?? '';
-	t.regex(final, /Grounded review · completed · 2 agents · \d+ tool calls · 3 API calls/);
+	t.true(final.includes('Grounded review · completed · 2 agents · 1 tool call · 3 model calls'));
+	t.true(final.includes('3 model calls · 1 tool call · 1 verifier run'));
 	t.true(final.includes('Grounded review · completed'));
 	t.true(final.includes('1 verified issue found.'));
 	t.true(final.includes('src/file.ts:2'));

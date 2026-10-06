@@ -223,7 +223,11 @@ export async function runDeepReview(
 			result.incompleteReasons.join('; '),
 			'Every specialist finder failed',
 		);
-		result.message = result.incompleteReasons.join(' ');
+		// Provider errors rarely end in a period, so a space-joined message
+		// runs the three reasons together.
+		result.message = result.incompleteReasons
+			.map(reason => `- ${reason}`)
+			.join('\n');
 		result.incompleteReasons = [];
 		return settle('failed');
 	}

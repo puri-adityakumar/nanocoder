@@ -144,6 +144,12 @@ test('one failed specialist does not discard the others, and all failing fails t
 	t.is(failed.result.status, 'failed');
 	t.is(failed.result.activity.status, 'failed');
 	t.is(failed.calls.filter(call => call.role === 'verifier').length, 0);
+	t.is(
+		failed.result.message,
+		FINDER_LENSES.map(
+			lens => `- The ${lens.label} finder failed: connection refused`,
+		).join('\n'),
+	);
 });
 
 test('cancelling during a later finder keeps earlier findings unverified', async t => {

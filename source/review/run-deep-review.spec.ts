@@ -254,37 +254,43 @@ test('deep review verifies distinct identifiers at the same location separately'
 	t.deepEqual(result.findings.map(finding => finding.issue), issues);
 });
 
+function repeatedLineScript(verdictForLine: (line: string) => string): ReviewScript {
+	let finderIndex = 0;
+	return call => {
+		if (call.role === 'verifier') {
+			const prompt = call.messages[1]?.content ?? '';
+			const id = prompt.match(/ID: (F\d+)/)?.[1] ?? 'F1';
+			const line = prompt.match(/LINE: (\d+)/)?.[1] ?? '';
+			return {content: verdictBlock({id, verdict: verdictForLine(line)})};
+		}
+		finderIndex++;
+		if (finderIndex === 1) {
+			return {
+				content: [
+					findingBlock({file: 'src/file.ts', line: 3, issue: 'Division by zero when count is 0'}),
+					findingBlock({file: 'src/file.ts', line: 3, issue: 'count is never validated before dividing'}),
+				].join('\n\n'),
+			};
+		}
+		if (finderIndex === 2) {
+			return {
+				content: findingBlock({
+					file: 'src/file.ts',
+					line: 2,
+					issue: 'average accepts a negative count',
+					evidence: 'export function average(total: number, count: number) {',
+				}),
+			};
+		}
+		return {content: 'NO FINDINGS'};
+	};
+}
+
 test('deep review verifies every cited line before repeats at the same line', async t => {
 	const fixture = featureFixture(t);
-	let finderIndex = 0;
 	const {result, calls} = await review(
 		fixture,
-		call => {
-			if (call.role === 'verifier') {
-				const id = call.messages[1]?.content.match(/ID: (F\d+)/)?.[1];
-				return {content: verdictBlock({id: id ?? 'F1'})};
-			}
-			finderIndex++;
-			if (finderIndex === 1) {
-				return {
-					content: [
-						findingBlock({file: 'src/file.ts', line: 3, issue: 'Division by zero when count is 0'}),
-						findingBlock({file: 'src/file.ts', line: 3, issue: 'count is never validated before dividing'}),
-					].join('\n\n'),
-				};
-			}
-			if (finderIndex === 2) {
-				return {
-					content: findingBlock({
-						file: 'src/file.ts',
-						line: 2,
-						issue: 'average accepts a negative count',
-						evidence: 'export function average(total: number, count: number) {',
-					}),
-				};
-			}
-			return {content: 'NO FINDINGS'};
-		},
+		repeatedLineScript(() => 'CONFIRM'),
 		{budgets: {...DEFAULT_GROUNDED_REVIEW_BUDGETS, maxVerifications: 2}},
 	);
 
@@ -292,7 +298,26 @@ test('deep review verifies every cited line before repeats at the same line', as
 		.filter(call => call.role === 'verifier')
 		.map(call => call.messages[1]?.content.match(/LINE: (\d+)/)?.[1]);
 	t.deepEqual(verified, ['3', '2']);
+	// The unverified repeat shares line 3 with a verified finding, so it is a
+	// note rather than a reason to call the review incomplete.
+	t.is(result.unverified.length, 0);
+	t.is(result.status, 'completed');
+	t.regex(
+		result.notes.join('\n'),
+		/Unverified src\/file\.ts:3 .* shares its line with a verified finding \(not verified: only 2 findings are verified/,
+	);
+});
+
+test('an unverified repeat stays unverified when its line has no verified finding', async t => {
+	const fixture = featureFixture(t);
+	const {result} = await review(
+		fixture,
+		repeatedLineScript(line => (line === '3' ? 'REJECT' : 'CONFIRM')),
+		{budgets: {...DEFAULT_GROUNDED_REVIEW_BUDGETS, maxVerifications: 2}},
+	);
+
+	t.deepEqual(result.findings.map(finding => finding.line), [2]);
 	t.is(result.unverified.length, 1);
 	t.is(result.unverified[0]?.finding.line, 3);
-	t.regex(result.unverified[0]?.reason ?? '', /only 2 findings are verified/);
+	t.is(result.status, 'incomplete');
 });

@@ -100,6 +100,23 @@ export async function verifyCitedFindings(
 			: `Verifying ${Math.min(cited.length, budgets.maxVerifications)} finding${cited.length === 1 ? '' : 's'}`,
 	);
 
+	// Unverified copies at a line that already has a verified finding are
+	// usually the same bug in other words. Listing them as unverified would
+	// mark the review incomplete, so keep them as notes instead.
+	const foldUnverified = () => {
+		const verifiedLines = new Set(
+			result.findings.map(finding => `${finding.file}:${finding.line}`),
+		);
+		result.unverified = result.unverified.filter(entry => {
+			const location = `${entry.finding.file}:${entry.finding.line}`;
+			if (!verifiedLines.has(location)) return true;
+			result.notes.push(
+				`Unverified ${location} "${entry.finding.issue}" shares its line with a verified finding (${entry.reason}).`,
+			);
+			return false;
+		});
+	};
+
 	for (const [index, {finding, snapshotFile}] of cited.entries()) {
 		if (index >= budgets.maxVerifications) {
 			result.unverified.push({
@@ -139,6 +156,7 @@ export async function verifyCitedFindings(
 					reason: 'not verified: review cancelled',
 				});
 			}
+			foldUnverified();
 			return 'cancelled';
 		}
 
@@ -185,6 +203,7 @@ export async function verifyCitedFindings(
 		}
 	}
 
+	foldUnverified();
 	if (result.unverified.length > 0) {
 		result.incompleteReasons.push(
 			`${result.unverified.length} cited finding${result.unverified.length === 1 ? ' was' : 's were'} not verified.`,

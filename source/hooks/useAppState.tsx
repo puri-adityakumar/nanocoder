@@ -400,6 +400,13 @@ export function useAppState(
 		prevMessagesRef.current = newMessages;
 		setMessages(newMessages);
 	}, []);
+	// Read the latest synchronous history, not a submission-time render snapshot.
+	const appendMessages = useCallback(
+		(additions: Message[]) => {
+			updateMessages([...prevMessagesRef.current, ...additions]);
+		},
+		[updateMessages],
+	);
 
 	return {
 		// State
@@ -538,5 +545,6 @@ export function useAppState(
 		addToChatQueue,
 		getMessageTokens,
 		updateMessages,
+		appendMessages,
 	};
 }

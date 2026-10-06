@@ -1,25 +1,46 @@
 ---
-title: "Review foundation"
-description: "How review target discovery and activity tracking are being staged"
+title: "Code review"
+description: "Grounded, evidence-checked review of a branch, pull request, commits, or working tree"
 sidebar_order: 23
 ---
 
-# Review foundation and rollout
+# Code review
 
-The review work is being delivered in stages so scope discovery and validation can be exercised before they become the default user path.
+`/review` runs a grounded review: an agent investigates the exact revision under review with read-only tools, every reported issue must cite `file:line` in the changed code, and an independent verifier re-checks each issue before it is shown. `/review quick` keeps the original one-shot, diff-only review.
 
-## What is available in the Foundation stage
+## Choosing what to review
 
-The public `/review` and `/review quick` commands keep their existing one-shot behavior in this stage. They do not show the new coordinator activity view, start agents, or change the review target-selection flow.
+| Command | Reviews |
+| --- | --- |
+| `/review` | The current branch against its base, or the working tree when only uncommitted changes exist. If both exist, you are asked to choose |
+| `/review feature/auth` or `/review branch feature/auth` | A local or remote branch against the default branch |
+| `/review 42`, `/review PR 42`, or a GitHub PR URL | A pull request, pinned to its current head. Bare numbers are resolved across configured GitHub remotes and fork parents |
+| `/review last 3 commits` | Recent commits on the current branch (`last 3 commits on branch <name>` for another branch) |
+| `/review working tree` | Uncommitted changes, including untracked files |
+| `/review quick [<branch or PR>]` | The one-shot diff review |
+| `/review activity` | The detailed activity trace of the latest review in this session |
 
-The internal Foundation coordinator can be exercised by its integration tests. It parses explicit branch, recent-commit, working-tree, and GitHub pull-request requests; verifies candidate refs; pins commit IDs; and reads bounded file snapshots and changed-line maps without checking out remote targets. PR snapshots retain the current base tip as well as the merge-base and pinned head used for changed-line mapping. Working-tree reviews record tracked and untracked (non-ignored) changes as a Git tree through a scratch index, so the real index and files are left untouched. Remote revisions are fetched into one fixed ref per source under `refs/nanocoder/review/`, which is removed after the review. It asks for clarification when candidates collide or when dirty worktree changes and branch-ahead commits coexist.
+When a target is ambiguous (for example a local and a remote branch with the same name) the review stops and lists the choices instead of guessing. Working-tree reviews read your changes through a scratch Git index, so staged changes and files are never modified.
 
-The internal activity view is driven by the same bounded event store used by that coordinator. Its key handling is opt-in so an inline transcript panel cannot consume composer input; when focused, `d` shows safe arguments and bounded event history, and Escape requests cancellation once while a run is active. Neither key changes current public `/review` behavior.
+## How a grounded review works
 
-Snapshot limits fail the resolution rather than returning a partial scope: oversized files, excessive file counts, or total content above the configured budget are not presented as a complete review.
+1. **Pin the scope.** Base and head commits are resolved and the changed files are snapshotted. Remote targets are fetched into temporary refs and never checked out, so your working tree is untouched.
+2. **Find.** A finder agent gets the diff and can call `review_changed_files`, `review_diff`, `review_read_file`, `review_search`, and `review_log`. These tools answer from the pinned revision, not from whatever is checked out. The agent has a fixed budget of model turns and tool calls; when it runs out it must report with what it has.
+3. **Check citations.** Each issue must point at an existing line of a changed text file, in or within three lines of a changed line or a deletion boundary in the head. Issues that do not are dropped and listed under **Dropped**.
+4. **Verify.** Each remaining issue (up to 8, most severe first) goes to a separate verifier agent that re-reads the code and answers `CONFIRM`, `REJECT`, or `INSUFFICIENT` with a confidence. Only confirmations with confidence 80 or higher are reported as findings.
 
-## What comes later
+Models without native tool calling use the same text tool-call fallback as normal chat.
 
-The next stage wires the verified coordinator into the default review path. Deeper review, additional finders, and headless JSON output are separate follow-on work; they are not part of this foundation.
+## Reading the result
 
-The activity summary can be serialized and safely parsed, but this stage does not persist review traces into saved sessions. Session-resume persistence is deferred to PR 2, when the coordinator is connected to a real session owner. PR 2 acceptance test: complete, fail, and cancel a review; close and resume the session; verify that the corresponding bounded, sanitized summary is still inspectable with its review identity, terminal status, and safe event history, without persisting prompts, diffs, or secrets.
+The report renders like a normal assistant reply, headed by the review status:
+
+- **completed**: the finder finished within budget, every changed text file was covered, and every cited issue was verified. Only a completed review says "No verified issues found".
+- **incomplete**: something limited coverage — the finder hit its budget, a file too large for the initial diff was never fully inspected, model output was cut off at its output limit, the finder's output could not be read, or some issues were not verified. An omitted file requires an untruncated whole-file diff or read; partial ranges and clipped tool output do not count as full coverage. Truncated verifier output cannot confirm an issue. The report lists why under **Why this review is incomplete**; treat it as partial.
+- **failed** or **cancelled**: the review stopped early; any partial results are labeled.
+
+While a review runs, a live activity view shows its agents, tool calls, and model calls. Press `d` to show details and `Esc` to cancel. The view only captures keys while the review is running.
+
+## Session history
+
+The report and a bounded, sanitized activity summary are saved with the session, so they reappear when the session is resumed and `/review activity` still works. The summary holds step names, statuses, timings, and safe arguments only — never prompts, diffs, or file contents. The review is shown to you but is not sent to the model as part of later conversation turns.

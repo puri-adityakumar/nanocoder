@@ -139,16 +139,32 @@ function watchProgress(
 	});
 }
 
-function componentMessage(node: unknown): {text: string; failed: boolean} {
-	if (!node || typeof node !== 'object' || !('props' in node)) {
-		return {text: 'Review failed.', failed: true};
+type RenderedNode = {
+	props?: {message?: unknown; children?: unknown};
+	type?: {name?: string};
+};
+
+// The quick tier returns either one message element or a fragment of
+// messages (scope notice, coverage warning, reasoning, then the report).
+function collectMessages(
+	node: unknown,
+): Array<{text: string; component: string}> {
+	if (Array.isArray(node)) return node.flatMap(collectMessages);
+	if (!node || typeof node !== 'object' || !('props' in node)) return [];
+	const {props, type} = node as RenderedNode;
+	if (typeof props?.message === 'string') {
+		return [{text: props.message, component: type?.name ?? ''}];
 	}
-	const props = (node as {props?: {message?: unknown}; type?: {name?: string}})
-		.props;
-	const text =
-		typeof props?.message === 'string' ? props.message : 'Review failed.';
-	const name = (node as {type?: {name?: string}}).type?.name ?? '';
-	return {text, failed: name === 'ErrorMessage'};
+	return collectMessages(props?.children);
+}
+
+function componentMessage(node: unknown): {text: string; failed: boolean} {
+	const messages = collectMessages(node);
+	if (messages.length === 0) return {text: 'Review failed.', failed: true};
+	return {
+		text: messages.map(message => message.text).join('\n\n'),
+		failed: messages.some(message => message.component === 'ErrorMessage'),
+	};
 }
 
 /**

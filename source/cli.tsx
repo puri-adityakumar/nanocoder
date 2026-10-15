@@ -238,7 +238,7 @@ Options:
                       line. Necessary for large prompts: Linux caps a single
                       argument at 128 KiB and execve fails with E2BIG.
   --trust-directory   Skip the first-run directory trust prompt for this run only.
-                      Valid with the "run" command and "daemon start". Does not modify
+                      Valid with "run", "review", and "daemon start". Does not modify
                       the preferences file.
   --plain             Use a lightweight, Ink-free runtime for non-interactive runs.
                       Only valid with the "run" command. Auto-enables in CI / non-TTY.
@@ -252,7 +252,8 @@ Options:
   --no-mouse          Disable mouse reporting in fullscreen mode: native text selection
                       works directly, but the wheel no longer scrolls chat history.
   --json              Output execution results as a single well-formed JSON object to stdout.
-                      Only valid with the "run" command. Always uses the plain runtime.
+                      Valid with "run" (always uses the plain runtime) and "review"
+                      (runs headless).
   --output-format     Specify stdout format ('text' or 'json'). Synonym for --json.
   --acp               Run as an ACP (Agent Client Protocol) server for editor integration.
                       Communicates via JSON-RPC over stdin/stdout.
@@ -584,7 +585,9 @@ async function main(): Promise<void> {
 
 	// Validate execution constraints for --json rules
 	if (outputFormat === 'json' && !nonInteractiveMode) {
-		console.error("Error: --json can only be used with the 'run' command.");
+		console.error(
+			"Error: --json can only be used with the 'run' or 'review' command.",
+		);
 		process.exit(1);
 	}
 

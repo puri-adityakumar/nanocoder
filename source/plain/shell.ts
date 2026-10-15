@@ -92,7 +92,7 @@ const defaultDeps: RunPlainShellDeps = {
  * the variable saves the directory to `trustedDirectories` - so the message
  * names which is which. Shared by the text and `--json` outputs.
  */
-function untrustedDirectoryMessage(
+export function untrustedDirectoryMessage(
 	cwd: string,
 	recheck?: TrustRecheck | null,
 ): string {

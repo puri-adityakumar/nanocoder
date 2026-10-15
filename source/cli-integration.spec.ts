@@ -143,6 +143,7 @@ test.serial('CLI integration: review PR command without a TTY runs the headless 
 		});
 		t.is(result.status, 1);
 		t.true(result.stderr.includes('is not trusted. Pass --trust-directory'));
+		t.is(result.stdout, '');
 	} finally {
 		rmSync(projectPath, {recursive: true, force: true});
 		rmSync(configPath, {recursive: true, force: true});

@@ -352,4 +352,10 @@ test.serial('dispatch sends /review to the grounded handler and /review quick to
 	t.is(calls.length, 0);
 	t.is(readPersistedReview(state.messages[0]!)?.status, 'clarification');
 	t.true(rendered.lastFrame()?.includes('Grounded review · needs a target'));
+
+	await handleMessageSubmission('/review deep please look at the thing I did', options);
+	await tick();
+	t.is(calls.length, 0);
+	t.is(readPersistedReview(state.messages.at(-1)!)?.tier, 'Deep');
+	t.true(rendered.lastFrame()?.includes('Deep review · needs a target'));
 });

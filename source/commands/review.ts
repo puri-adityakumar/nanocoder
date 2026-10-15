@@ -626,7 +626,7 @@ export function createReviewCommand(
 	return {
 		name: 'review',
 		description:
-			'Grounded, evidence-checked review of a branch, PR, commits, or working tree (`quick` for one-shot, `activity` for details)',
+			'Grounded, evidence-checked review of a branch, PR, commits, or working tree (`deep` for specialist finders, `quick` for one-shot, `activity` for details)',
 		progressLabel: 'Reviewing code',
 		handler: async (args, messages, metadata) => {
 			if (args[0]?.toLowerCase() === 'activity') {

@@ -1,7 +1,7 @@
 import test from 'ava';
 import {createAnthropic} from '@ai-sdk/anthropic';
 import {createOpenAI} from '@ai-sdk/openai';
-import {jsonSchema, streamText, tool} from 'ai';
+import {jsonSchema, NoSuchToolError, streamText, tool} from 'ai';
 import type {
 	AIProviderConfig,
 	AISDKCoreTool,
@@ -9,7 +9,7 @@ import type {
 	StreamCallbacks,
 } from '@/types/index';
 import type {LanguageModel} from 'ai';
-import {handleChat} from './chat-handler.js';
+import {handleChat, stopOnUnknownTool} from './chat-handler.js';
 import type {ChatHandlerParams} from './chat-handler.js';
 import {rehydrateResponse} from './privacy.js';
 
@@ -1050,4 +1050,99 @@ test('the v4 spelling maxTokens does not reach the provider', async t => {
 		4096,
 		'maxTokens is silently ignored — the bug this fix exists for',
 	);
+});
+
+// A stuck model calling a nonexistent tool must reach the conversation loop's
+// repeated-call cap, not loop inside one SDK call.
+test('stopOnUnknownTool stops on a call to a tool that does not exist', t => {
+	const unknown = {
+		type: 'tool-call',
+		toolCallId: 'c1',
+		toolName: 'no_such_tool',
+		input: {},
+		dynamic: true,
+		invalid: true,
+		error: new NoSuchToolError({toolName: 'no_such_tool'}),
+	};
+	const valid = {
+		type: 'tool-call',
+		toolCallId: 'c2',
+		toolName: 'read_file',
+		input: {path: 'a'},
+	};
+	const steps = (toolCalls: unknown[]) =>
+		({steps: [{toolCalls}]}) as unknown as Parameters<
+			typeof stopOnUnknownTool
+		>[0];
+
+	t.true(stopOnUnknownTool(steps([unknown])) as boolean);
+	t.false(stopOnUnknownTool(steps([valid])) as boolean);
+	// An unparsable call to a real tool is not this condition's concern.
+	t.false(
+		stopOnUnknownTool(
+			steps([{...unknown, toolName: 'read_file', error: new Error('bad json')}]),
+		) as boolean,
+	);
+	t.false(stopOnUnknownTool({steps: []} as never) as boolean);
+});
+
+test('openai-compatible: a tool screenshot reaches the request body as an image_url part', async t => {
+	const {createOpenAICompatible} = await import('@ai-sdk/openai-compatible');
+	let body: {messages: Array<{role: string; content: unknown}>} | undefined;
+	const model = createOpenAICompatible({
+		name: 'Ollama',
+		baseURL: 'http://localhost:11434/v1',
+		fetch: async (_input, init) => {
+			body = JSON.parse(String(init?.body));
+			throw new Error('request captured');
+		},
+	})('llava');
+
+	await handleChat({
+		model,
+		currentModel: 'llava',
+		providerConfig: {
+			name: 'Ollama',
+			type: 'openai',
+			models: ['llava'],
+			config: {baseURL: 'http://localhost:11434/v1'},
+		},
+		messages: [
+			{role: 'user', content: 'check the page'},
+			{
+				role: 'assistant',
+				content: '',
+				tool_calls: [
+					{id: 'call_shot', function: {name: 'browser', arguments: {}}},
+				],
+			},
+			{
+				role: 'tool',
+				content: 'Screenshot of http://localhost:3000/',
+				tool_call_id: 'call_shot',
+				name: 'browser',
+				images: [{data: 'SCREENSHOT_B64', mediaType: 'image/jpeg'}],
+			},
+		],
+		tools: {},
+		callbacks: {},
+		maxRetries: 0,
+	}).catch(() => undefined);
+
+	const [, , toolMessage, imageMessage] = body?.messages ?? [];
+	t.deepEqual(toolMessage, {
+		role: 'tool',
+		tool_call_id: 'call_shot',
+		content: 'Screenshot of http://localhost:3000/',
+	});
+	t.deepEqual(imageMessage, {
+		role: 'user',
+		content: [
+			{type: 'text', text: 'Images from the tool results above.'},
+			{
+				type: 'image_url',
+				image_url: {url: 'data:image/jpeg;base64,SCREENSHOT_B64'},
+			},
+		],
+	});
 });

@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import test from 'ava';
 import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
+import stripAnsi from 'strip-ansi';
 import type {Colors} from '../types/markdown-parser.js';
 import {parseMarkdown} from './index.js';
 
@@ -170,6 +171,19 @@ test('parseMarkdown renders tables with plain text (no markdown)', t => {
 	t.false(result.includes('`npm install`'));
 });
 
+test('parseMarkdown keeps the last row of a table that ends the text', t => {
+	// Replies are trimmed, so the final row has no newline after it. It used
+	// to fall outside the rendered table as a raw markdown line.
+	const text = `| A | B |
+|---|---|
+| a1 | b1 |
+| a2 | b2 |`;
+	const result = stripAnsi(parseMarkdown(text, mockColors));
+	t.true(result.includes('a2'));
+	t.false(/\|\s*a2\s*\|\s*b2\s*\|/.test(result));
+	t.true(result.trimEnd().endsWith('┘'));
+});
+
 // Code block tests
 test('parseMarkdown handles code blocks with language', t => {
 	const text = '```javascript\nconst x = 5;\n```';
@@ -182,6 +196,15 @@ test('parseMarkdown handles code blocks without language', t => {
 	const text = '```\nPlain code\n```';
 	const result = parseMarkdown(text, mockColors);
 	t.true(result.includes('Plain code'));
+});
+
+test('parseMarkdown preserves HTML inside code blocks', t => {
+	const text = '```html\n<div>Hello<br>World</div>\n&lt;span&gt;test&lt;/span&gt;\n```';
+	const result = parseMarkdown(text, mockColors);
+	const plainResult = stripAnsi(result);
+
+	t.true(plainResult.includes('<br>'));
+	t.true(plainResult.includes('&lt;span&gt;test&lt;/span&gt;'));
 });
 
 // Code blocks used to render in cli-highlight's own palette: the parser passed

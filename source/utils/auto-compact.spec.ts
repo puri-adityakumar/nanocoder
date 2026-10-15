@@ -6,10 +6,13 @@ import {
 import type {LLMChatResponse, LLMClient, Message} from '@/types/core';
 import {jsonSchema, tool} from '@/types/core';
 import {
+	AGGRESSIVE_COMPACT_THRESHOLD,
+	applyTuneCompaction,
 	autoCompactSessionOverrides,
 	maybeAutoCompact,
 	performAutoCompact,
 	resetAutoCompactSession,
+	resolveAutoCompactSettings,
 	setAutoCompactEnabled,
 	setAutoCompactMode,
 	setAutoCompactStrategy,
@@ -133,6 +136,74 @@ test('resetAutoCompactSession resets all overrides to null', t => {
 	t.is(autoCompactSessionOverrides.enabled, null);
 	t.is(autoCompactSessionOverrides.threshold, null);
 	t.is(autoCompactSessionOverrides.mode, null);
+});
+
+// ==================== Tune aggressive compact layer ====================
+
+const baseConfig = {
+	enabled: true,
+	threshold: 70,
+	mode: 'conservative' as const,
+	strategy: 'llm' as const,
+};
+
+test('resolveAutoCompactSettings uses config when nothing overrides it', t => {
+	const resolved = resolveAutoCompactSettings(baseConfig);
+	t.is(resolved.threshold, 70);
+	t.is(resolved.mode, 'conservative');
+	t.is(resolved.strategy, 'llm');
+	t.false(resolved.hasOverrides);
+});
+
+test('tune aggressive compact lowers threshold to the minimum and sets aggressive mode', t => {
+	applyTuneCompaction({
+		enabled: true,
+		toolProfile: 'auto',
+		aggressiveCompact: true,
+	});
+	const resolved = resolveAutoCompactSettings(baseConfig);
+	t.is(resolved.threshold, AGGRESSIVE_COMPACT_THRESHOLD);
+	t.is(AGGRESSIVE_COMPACT_THRESHOLD, COMPRESSION_CONSTANTS.MIN_THRESHOLD_PERCENT);
+	t.is(resolved.mode, 'aggressive');
+	t.true(resolved.hasOverrides);
+});
+
+test('tune aggressive compact is ignored when tune is disabled', t => {
+	applyTuneCompaction({
+		enabled: false,
+		toolProfile: 'auto',
+		aggressiveCompact: true,
+	});
+	t.is(resolveAutoCompactSettings(baseConfig).threshold, 70);
+});
+
+test('explicit /compact session overrides beat tune aggressive compact', t => {
+	setAutoCompactThreshold(85);
+	setAutoCompactMode('default');
+	applyTuneCompaction({
+		enabled: true,
+		toolProfile: 'auto',
+		aggressiveCompact: true,
+	});
+	const resolved = resolveAutoCompactSettings(baseConfig);
+	t.is(resolved.threshold, 85);
+	t.is(resolved.mode, 'default');
+});
+
+test('turning tune aggressive compact off keeps a user threshold override', t => {
+	setAutoCompactThreshold(85);
+	applyTuneCompaction({
+		enabled: true,
+		toolProfile: 'auto',
+		aggressiveCompact: true,
+	});
+	applyTuneCompaction({
+		enabled: true,
+		toolProfile: 'auto',
+		aggressiveCompact: false,
+	});
+	t.is(autoCompactSessionOverrides.threshold, 85);
+	t.is(resolveAutoCompactSettings(baseConfig).mode, 'conservative');
 });
 
 // ==================== Proxy compatibility ====================
@@ -560,6 +631,7 @@ test('performAutoCompact falls back to mechanical when LLM throws', async t => {
 		{role: 'assistant', content: 'recent reply'},
 	];
 	const systemMessage: Message = {role: 'system', content: 'sys'};
+	const notifications: string[] = [];
 	const client: LLMClient = {
 		getCurrentModel: () => 'stub',
 		setModel: () => {},
@@ -588,9 +660,9 @@ test('performAutoCompact falls back to mechanical when LLM throws', async t => {
 			threshold: 50,
 			mode: 'default',
 			strategy: 'llm',
-			notifyUser: false,
+			notifyUser: true,
 		},
-		undefined,
+		n => notifications.push(n),
 		client,
 	);
 
@@ -599,6 +671,51 @@ test('performAutoCompact falls back to mechanical when LLM throws', async t => {
 	t.false(
 		(result || []).some(m => (m.content || '').includes('<conversation-summary>')),
 		'output is mechanical (no LLM summary marker)',
+	);
+	t.true(
+		notifications.at(-1)?.includes('(summary degraded: LLM call failed)'),
+		'fallback notification identifies the failed LLM summary',
+	);
+});
+
+test('performAutoCompact reports degraded fallback when LLM returns an empty summary', async t => {
+	setupAutoCompactEnv(100);
+
+	const messages: Message[] = [
+		{role: 'user', content: 'old '.repeat(400)},
+		{role: 'assistant', content: 'reply'},
+		{role: 'user', content: 'recent'},
+		{role: 'assistant', content: 'recent reply'},
+	];
+	const systemMessage: Message = {role: 'system', content: 'sys'};
+	const notifications: string[] = [];
+	const client = makeStubClient(() => '   ');
+
+	const result = await performAutoCompact(
+		messages,
+		systemMessage,
+		'openai',
+		'gpt-4',
+		{
+			enabled: true,
+			threshold: 50,
+			mode: 'default',
+			strategy: 'llm',
+			notifyUser: true,
+		},
+		n => notifications.push(n),
+		client,
+	);
+
+	t.truthy(result);
+	t.is(client.calls, 1, 'the LLM was called and returned an empty summary');
+	t.false(
+		(result || []).some(m => (m.content || '').includes('<conversation-summary>')),
+		'output is mechanical (no LLM summary marker)',
+	);
+	t.true(
+		notifications.at(-1)?.includes('(summary degraded: LLM call failed)'),
+		'fallback notification identifies the failed LLM summary',
 	);
 });
 

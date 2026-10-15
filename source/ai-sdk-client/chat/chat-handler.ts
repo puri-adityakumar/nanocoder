@@ -1,4 +1,4 @@
-import type {LanguageModel} from 'ai';
+import type {LanguageModel, StopCondition, ToolSet} from 'ai';
 import {
 	InvalidToolInputError,
 	NoSuchToolError,
@@ -7,6 +7,29 @@ import {
 	ToolCallRepairError,
 } from 'ai';
 import {MAX_TOOL_STEPS} from '@/constants';
+import {getModelAcceptsImages} from '@/models/models-dev-client';
+
+/**
+ * Stop the SDK's step loop at a call to a tool that does not exist.
+ *
+ * Tools reach the SDK with `execute` stripped, so a valid call already ends
+ * the step. An unknown one does not: the SDK answers it with an automatic
+ * error result and runs another step, so a model stuck on a nonexistent tool
+ * looped up to MAX_TOOL_STEPS times inside one chat() call, invisible to the
+ * conversation loop's unknown-tool handling and its repeated-call cap
+ * (`nanocoder.retries.maxRepeatedToolCalls`). Ending the step hands the call
+ * back so both apply.
+ */
+export const stopOnUnknownTool: StopCondition<ToolSet> = ({steps}) =>
+	steps
+		.at(-1)
+		?.toolCalls.some(
+			call =>
+				call?.dynamic === true &&
+				call.invalid === true &&
+				NoSuchToolError.isInstance(call.error),
+		) ?? false;
+
 import type {
 	AIProviderConfig,
 	AISDKCoreTool,
@@ -31,6 +54,7 @@ import {
 import {getSafeMemory} from '@/utils/logging/safe-process.js';
 import {
 	convertToModelMessages,
+	type ToolImageDelivery,
 	withCacheBreakpoints,
 } from '../converters/message-converter.js';
 import {convertAISDKToolCalls} from '../converters/tool-converter.js';
@@ -179,7 +203,21 @@ export async function handleChat(
 
 			// Convert messages to AI SDK v5 ModelMessage format
 			const promptCaching = isPromptCachingEnabled(providerConfig);
-			const convertedMessages = convertToModelMessages(finalNonSystemMessages);
+			// `*.chat` is the SDK's Chat Completions model: openai-compatible
+			// providers and Copilot's non-GPT-5 route.
+			const hasToolImages = finalNonSystemMessages.some(
+				m => m.role === 'tool' && !!m.images?.length,
+			);
+			const toolImages: ToolImageDelivery =
+				hasToolImages && (await getModelAcceptsImages(currentModel)) === false
+					? 'omit'
+					: typeof model !== 'string' && model.provider.endsWith('.chat')
+						? 'user-message'
+						: 'inline';
+			const convertedMessages = convertToModelMessages(
+				finalNonSystemMessages,
+				toolImages,
+			);
 			const modelMessages = promptCaching
 				? withCacheBreakpoints(convertedMessages, finalSystemContent)
 				: convertedMessages;
@@ -230,7 +268,7 @@ export async function handleChat(
 				tools: aiTools,
 				abortSignal: signal,
 				maxRetries,
-				stopWhen: stepCountIs(MAX_TOOL_STEPS),
+				stopWhen: [stepCountIs(MAX_TOOL_STEPS), stopOnUnknownTool],
 				onStepFinish: createOnStepFinishHandler(callbacks),
 				prepareStep: createPrepareStepHandler(),
 				onError: ({error}) => {

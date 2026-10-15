@@ -81,6 +81,14 @@ export const lazyCommands: LazyCommand[] = [
 		load: () => import('@/commands/commit').then(m => m.commitCommand),
 	},
 	{
+		name: 'review',
+		description:
+			'Review a branch or PR diff for bugs, security issues, and style violations',
+		progressLabel: 'Reviewing code',
+		echoInvocation: true,
+		load: () => import('@/commands/review').then(m => m.reviewCommand),
+	},
+	{
 		name: 'doctor',
 		description: 'Show environment health report for bug reports',
 		load: () => import('@/commands/doctor').then(m => m.doctorCommand),
@@ -125,7 +133,7 @@ export const lazyCommands: LazyCommand[] = [
 	},
 	{
 		name: 'export',
-		description: 'Export the chat history to a markdown file',
+		description: 'Export the chat history to a markdown or JSON file',
 		load: () => import('@/commands/export').then(m => m.exportCommand),
 	},
 	{
@@ -257,5 +265,10 @@ export const lazyCommands: LazyCommand[] = [
 		description:
 			'Inspect what the prompt scrubber will remove from your prompts',
 		load: () => import('@/commands/privacy').then(m => m.privacyCommand),
+	},
+	{
+		name: 'voice',
+		description: 'Toggle voice mode and configure voice settings',
+		load: () => import('@/commands/voice').then(m => m.voiceCommand),
 	},
 ];

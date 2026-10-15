@@ -56,6 +56,7 @@ import {
 } from './handlers/create-handler';
 import {handleMCPPromptCommand} from './handlers/mcp-prompt-handler';
 import {handleRetryCommand} from './handlers/retry-handler';
+import {handleGroundedReviewCommand} from './handlers/review-handler';
 import {handleResumeCommand} from './handlers/session-handler';
 
 /**
@@ -730,6 +731,7 @@ async function handleSlashCommand(
 		if (handleCopilotLogin(commandParts, options)) return;
 		if (handleCodexLogin(commandParts, options)) return;
 		if (handleStatsCommand(commandParts, options)) return;
+		if (await handleGroundedReviewCommand(cleanedMessage, options)) return;
 
 		await handleBuiltInCommand(cleanedMessage, options);
 	} finally {

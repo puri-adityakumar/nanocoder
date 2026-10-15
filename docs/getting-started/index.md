@@ -237,7 +237,7 @@ The first time Nanocoder runs in a new directory, it shows a security disclaimer
 nanocoder --trust-directory run "your prompt here"
 ```
 
-The override is ephemeral: it does **not** add the directory to `trustedDirectories` in your [preferences file](../configuration/preferences.md), so subsequent interactive sessions will still see the disclaimer. The flag only applies to `run`, `nanocoder review` without a terminal, and `nanocoder daemon start`; using it in interactive mode prints a warning and is otherwise ignored.
+The override is ephemeral: it does **not** add the directory to `trustedDirectories` in your [preferences file](../configuration/preferences.md), so subsequent interactive sessions will still see the disclaimer. The flag only applies to `run`, `nanocoder review`, and `nanocoder daemon start`; using it in interactive mode prints a warning and is otherwise ignored.
 
 To trust a directory permanently instead, set `NANOCODER_TRUST_DIRECTORY=1` for a `--plain` run (the default in CI and non-TTY environments), for `nanocoder review` without a terminal, or for `nanocoder daemon start`. The first run with it set adds the directory to `trustedDirectories`, so later runs no longer need the variable.
 

@@ -196,6 +196,9 @@ function cliDeps(
 	};
 }
 
+const TRUST_BYPASS_WORDING =
+	'Pass --trust-directory to bypass the disclaimer for this run only, or set NANOCODER_TRUST_DIRECTORY=1 to trust this directory permanently.';
+
 test.serial('the CLI review refuses an untrusted directory before provider setup', async t => {
 	delete process.env.NANOCODER_TRUST_DIRECTORY;
 	let initialized = false;
@@ -219,9 +222,44 @@ test.serial('the CLI review refuses an untrusted directory before provider setup
 	>;
 	t.is(parsed.tier, 'deep');
 	t.is(parsed.status, 'failed');
-	t.regex(parsed.message ?? '', /not trusted/);
-	t.regex(errors.join('\n'), /not trusted/);
+	const expected = `Directory ${process.cwd()} is not trusted. ${TRUST_BYPASS_WORDING}`;
+	t.is(parsed.message, expected);
+	t.deepEqual(errors, [expected]);
 });
+
+for (const {name, entry, reason} of [
+	{
+		name: 'a path-only entry saved before fingerprints',
+		entry: process.cwd(),
+		reason: 'needs re-approval after the upgrade',
+	},
+	{
+		name: 'an entry whose fingerprint no longer matches',
+		entry: {path: process.cwd(), fingerprint: 'stale-fingerprint'},
+		reason: 'changed since you trusted it',
+	},
+]) {
+	test.serial(`the CLI review says why it refuses ${name}`, async t => {
+		delete process.env.NANOCODER_TRUST_DIRECTORY;
+		const errors: string[] = [];
+		const outcome = await runHeadlessReviewCli({
+			args: ['main'],
+			trustDirectory: false,
+			outputFormat: 'json',
+			deps: cliDeps({
+				loadPreferences: () => ({trustedDirectories: [entry]}),
+				writeError: line => errors.push(line),
+			}),
+		});
+		t.is(outcome.exitCode, 1);
+		const parsed = JSON.parse(outcome.stdout) as ReturnType<
+			typeof buildHeadlessReviewJson
+		>;
+		const expected = `Directory ${process.cwd()} ${reason}. ${TRUST_BYPASS_WORDING}`;
+		t.is(parsed.message, expected);
+		t.deepEqual(errors, [expected]);
+	});
+}
 
 test.serial('--trust-directory runs the review with the resolved tune settings', async t => {
 	let received: HeadlessReviewOptions | undefined;

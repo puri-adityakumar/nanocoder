@@ -16,6 +16,7 @@ import {
 } from '@/config/preferences';
 import {resolveTune} from '@/config/tune';
 import {initializePlain} from '@/plain/initialize';
+import {untrustedDirectoryMessage} from '@/plain/shell';
 import {writeError, writeStatus} from '@/plain/writer';
 import type {TuneConfig} from '@/types/config';
 import type {LLMClient} from '@/types/core';
@@ -308,7 +309,7 @@ export async function runHeadlessReviewCli(
 	}
 	if (!trust.trusted) {
 		return fail(
-			`Directory ${path.resolve(process.cwd())} is not trusted. Pass --trust-directory or set NANOCODER_TRUST_DIRECTORY=1 to bypass the disclaimer for this run.`,
+			untrustedDirectoryMessage(path.resolve(process.cwd()), trust.recheck),
 		);
 	}
 
